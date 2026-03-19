@@ -34,6 +34,7 @@ The current Rust implementation is exact-only. It does not do fuzzy barcode matc
 - `coverage`: report how often each expected region is fully covered by the read
 - `fixed`: check exact matches for fixed-sequence regions
 - `onlist`: check exact onlist membership for onlist regions
+- `random`: summarize per-position base entropy for `sequence_type=random` regions against the 2-bit DNA maximum
 - `cut`: extract an exact region slice from each covered read
 - `hist`: count exact region slices across reads
 - `version`: print the `seqcheck` version and the `seqspec` file version
@@ -93,6 +94,13 @@ seqcheck hist \
   -r barcode \
   -n 0 \
   tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
+
+seqcheck random \
+  --format json \
+  -s tests/fixtures/synthetic/spec.yaml \
+  -m rna \
+  -n 0 \
+  tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
 ```
 
 ## Output
@@ -120,6 +128,7 @@ The `results` payload depends on the command:
 - `coverage` also emits warnings when the same `region_id` or biological `region_type` is assigned to multiple reads in one invocation. This is the main guardrail for the failure mode shown in the CRISPR presentation under `docs/`.
 - `fixed`: per-region fixed-sequence match counts and top mismatches
 - `onlist`: per-region onlist match counts and top offlist sequences
+- `random`: per-region and per-position base counts, Shannon entropy in bits, and entropy as a fraction of the 2-bit DNA maximum
 - `cut`: extracted region sequences
 - `hist`: counts of extracted region sequences
 

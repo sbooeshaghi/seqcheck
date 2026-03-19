@@ -284,6 +284,47 @@ fn test_coverage_surfaces_duplicate_assignment_warnings() {
 }
 
 #[test]
+fn test_random_json_reports_entropy_against_max() {
+    let observed = run_success(&[
+        "random",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/synthetic/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+    ]);
+    let parsed: Value = serde_json::from_str(&observed).unwrap();
+
+    let regions = parsed["files"][0]["results"]["regions"].as_array().unwrap();
+    let umi = regions
+        .iter()
+        .find(|region| region["region_id"] == "umi")
+        .unwrap();
+    let cdna = regions
+        .iter()
+        .find(|region| region["region_id"] == "cdna")
+        .unwrap();
+
+    assert_eq!(umi["covered_count"], 4);
+    assert_eq!(umi["short_read_count"], 1);
+    assert!((umi["mean_entropy_bits"].as_f64().unwrap() - 1.5).abs() < 1e-9);
+    assert!((umi["mean_entropy_fraction"].as_f64().unwrap() - 0.75).abs() < 1e-9);
+    assert_eq!(umi["positions"][0]["counts"]["a"], 2);
+    assert_eq!(umi["positions"][0]["counts"]["g"], 1);
+    assert_eq!(umi["positions"][0]["counts"]["t"], 1);
+    assert!((umi["positions"][0]["entropy_bits"].as_f64().unwrap() - 1.5).abs() < 1e-9);
+
+    assert_eq!(cdna["covered_count"], 4);
+    assert_eq!(cdna["positions"][0]["counts"]["c"], 3);
+    assert_eq!(cdna["positions"][0]["counts"]["g"], 1);
+    assert!(cdna["mean_entropy_fraction"].as_f64().unwrap() < 0.5);
+}
+
+#[test]
 fn test_non_rna_length_json_uses_seqspec_fixture() {
     let observed = run_success(&[
         "length",
