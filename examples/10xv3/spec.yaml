@@ -1,0 +1,166 @@
+seqspec_version: 0.4.0
+assay_id: 10xRNAv3
+name: 10x-RNA-v3
+doi: https://doi.org/10.1038/ncomms14049
+date: 2026-03-19
+description: 10x v3 single-cell RNA-seq example for seqcheck
+modalities:
+  - rna
+lib_struct: https://teichlab.github.io/scg_lib_structs/methods_html/10xChromium3.html
+sequence_spec:
+  - read_id: R1.fastq.gz
+    name: Read 1
+    modality: rna
+    primer_id: truseq_read1
+    min_len: 28
+    max_len: 28
+    strand: pos
+    files:
+      - file_id: R1.fastq.gz
+        filename: R1.fastq.gz
+        filetype: fastq
+        filesize: 0
+        url: fastqs/R1.fastq.gz
+        urltype: local
+        md5: ""
+  - read_id: I1.fastq.gz
+    name: Index 1
+    modality: rna
+    primer_id: truseq_read2
+    min_len: 8
+    max_len: 8
+    strand: pos
+    files:
+      - file_id: I1.fastq.gz
+        filename: I1.fastq.gz
+        filetype: fastq
+        filesize: 0
+        url: fastqs/I1.fastq.gz
+        urltype: local
+        md5: ""
+  - read_id: I2.fastq.gz
+    name: Index 2
+    modality: rna
+    primer_id: truseq_read1
+    min_len: 8
+    max_len: 8
+    strand: neg
+    files:
+      - file_id: I2.fastq.gz
+        filename: I2.fastq.gz
+        filetype: fastq
+        filesize: 0
+        url: fastqs/I2.fastq.gz
+        urltype: local
+        md5: ""
+  - read_id: R2.fastq.gz
+    name: Read 2
+    modality: rna
+    primer_id: truseq_read2
+    min_len: 1
+    max_len: 98
+    strand: neg
+    files:
+      - file_id: R2.fastq.gz
+        filename: R2.fastq.gz
+        filetype: fastq
+        filesize: 0
+        url: fastqs/R2.fastq.gz
+        urltype: local
+        md5: ""
+library_spec:
+  - region_id: rna
+    region_type: rna
+    name: 10x v3 RNA
+    sequence_type: joined
+    sequence: AATGATACGGCGACCACCGAGATCTACACTCTTTCCCTACACGACGCTCTTCCGATCTNNNNNNNNNNNNNNNNXXXXXXXXXXXXAGATCGGAAGAGCACACGTCTGAACTCCAGTCACNNNNNNNNATCTCGTATGCCGTCTTCTGCTTG
+    min_len: 152
+    max_len: 249
+    onlist: null
+    regions:
+      - region_id: illumina_p5
+        region_type: illumina_p5
+        name: Illumina P5
+        sequence_type: fixed
+        sequence: AATGATACGGCGACCACCGAGATCTACAC
+        min_len: 29
+        max_len: 29
+        onlist: null
+        regions: []
+      - region_id: truseq_read1
+        region_type: truseq_read1
+        name: TruSeq Read 1
+        sequence_type: fixed
+        sequence: TCTTTCCCTACACGACGCTCTTCCGATCT
+        min_len: 29
+        max_len: 29
+        onlist: null
+        regions: []
+      - region_id: barcode
+        region_type: barcode
+        name: Cell Barcode
+        sequence_type: onlist
+        sequence: NNNNNNNNNNNNNNNN
+        min_len: 16
+        max_len: 16
+        onlist:
+          file_id: 3M-february-2018.txt.gz
+          filename: 3M-february-2018.txt.gz
+          filetype: txt
+          filesize: 0
+          url: 3M-february-2018.txt.gz
+          urltype: local
+          md5: 3d36d0a4021fd292b265e2b5e72aaaf3
+        regions: []
+      - region_id: umi
+        region_type: umi
+        name: UMI
+        sequence_type: random
+        sequence: XXXXXXXXXXXX
+        min_len: 12
+        max_len: 12
+        onlist: null
+        regions: []
+      - region_id: cdna
+        region_type: cdna
+        name: cDNA
+        sequence_type: random
+        sequence: X
+        min_len: 1
+        max_len: 98
+        onlist: null
+        regions: []
+      - region_id: truseq_read2
+        region_type: truseq_read2
+        name: TruSeq Read 2
+        sequence_type: fixed
+        sequence: AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC
+        min_len: 34
+        max_len: 34
+        onlist: null
+        regions: []
+      - region_id: index7
+        region_type: index7
+        name: Index 7
+        sequence_type: onlist
+        sequence: NNNNNNNN
+        min_len: 8
+        max_len: 8
+        onlist:
+          file_id: index7_onlist.txt
+          filename: index7_onlist.txt
+          filetype: txt
+          filesize: 0
+          url: index7_onlist.txt
+          urltype: local
+          md5: ""
+        regions: []
+      - region_id: illumina_p7
+        region_type: illumina_p7
+        name: Illumina P7
+        sequence_type: fixed
+        sequence: ATCTCGTATGCCGTCTTCTGCTTG
+        min_len: 24
+        max_len: 24
+        onlist: null
+        regions: []

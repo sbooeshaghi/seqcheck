@@ -1,2 +1,7 @@
 /target
 .DS_Store
+/archive/
+/spec.yaml
+examples/dogmaseq-lll/
+examples/.DS_Store
+examples/SPLiT-seq
