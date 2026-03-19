@@ -1,36 +1,20 @@
 use crate::context::{filter_regions_by_sequence_type, load_resolved_inputs};
-use crate::report::{format_fraction, write_report, FileReport, ReportEnvelope};
+use crate::report::{
+    format_fraction, top_sequences, write_report, FileReport, ReportEnvelope, SequenceCount,
+};
 use crate::scan::{extract_region, scan_fastq};
 use crate::CommonMetricArgs;
 use anyhow::Result;
 use serde::Serialize;
+use std::collections::HashMap;
 
-const MAX_DNA_ENTROPY_BITS: f64 = 2.0;
+const DNA_BITS_PER_BASE: f64 = 2.0;
+const TOP_SEQUENCE_LIMIT: usize = 10;
 
 #[derive(Debug, clap::Args)]
 pub struct RandomArgs {
     #[command(flatten)]
     pub common: CommonMetricArgs,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BaseCounts {
-    pub a: usize,
-    pub c: usize,
-    pub g: usize,
-    pub t: usize,
-    pub n: usize,
-    pub other: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RandomPositionResult {
-    pub offset: usize,
-    pub counts: BaseCounts,
-    pub valid_base_count: usize,
-    pub entropy_bits: f64,
-    pub max_entropy_bits: f64,
-    pub entropy_fraction: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,10 +28,11 @@ pub struct RandomRegionResult {
     pub covered_count: usize,
     pub covered_fraction: f64,
     pub short_read_count: usize,
-    pub mean_entropy_bits: f64,
+    pub unique_sequence_count: usize,
+    pub sequence_entropy_bits: f64,
     pub max_entropy_bits: f64,
-    pub mean_entropy_fraction: f64,
-    pub positions: Vec<RandomPositionResult>,
+    pub sequence_entropy_fraction: f64,
+    pub top_sequences: Vec<SequenceCount>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -57,20 +42,10 @@ pub struct RandomResult {
 }
 
 #[derive(Debug, Clone, Default)]
-struct PositionState {
-    a: usize,
-    c: usize,
-    g: usize,
-    t: usize,
-    n: usize,
-    other: usize,
-}
-
-#[derive(Debug, Clone, Default)]
 struct RandomRegionState {
     covered_count: usize,
     short_read_count: usize,
-    positions: Vec<PositionState>,
+    sequences: HashMap<String, usize>,
 }
 
 pub fn run(args: &RandomArgs) -> Result<()> {
@@ -87,17 +62,7 @@ pub fn run(args: &RandomArgs) -> Result<()> {
         let file_id = input.file_id();
         let matched_by = input.matched_by.clone();
         let random_regions = filter_regions_by_sequence_type(&input, "random");
-        let state = random_regions
-            .iter()
-            .map(|region| RandomRegionState {
-                covered_count: 0,
-                short_read_count: 0,
-                positions: vec![
-                    PositionState::default();
-                    usize::try_from(region.stop - region.start).unwrap_or_default()
-                ],
-            })
-            .collect::<Vec<_>>();
+        let state = vec![RandomRegionState::default(); random_regions.len()];
         let regions = random_regions.clone();
 
         let (state, sampled_count) = scan_fastq(
@@ -109,9 +74,7 @@ pub fn run(args: &RandomArgs) -> Result<()> {
                     match extract_region(sequence, region) {
                         Some(observed) => {
                             state[idx].covered_count += 1;
-                            for (offset, base) in observed.chars().enumerate() {
-                                increment_base(&mut state[idx].positions[offset], base);
-                            }
+                            *state[idx].sequences.entry(observed).or_insert(0) += 1;
                         }
                         None => {
                             state[idx].short_read_count += 1;
@@ -162,44 +125,9 @@ fn build_region_result(
     sampled_count: usize,
     state: &RandomRegionState,
 ) -> RandomRegionResult {
-    let positions = state
-        .positions
-        .iter()
-        .enumerate()
-        .map(|(offset, position)| {
-            let valid_base_count = position.a + position.c + position.g + position.t;
-            let entropy_bits = entropy_bits(position);
-            RandomPositionResult {
-                offset,
-                counts: BaseCounts {
-                    a: position.a,
-                    c: position.c,
-                    g: position.g,
-                    t: position.t,
-                    n: position.n,
-                    other: position.other,
-                },
-                valid_base_count,
-                entropy_bits,
-                max_entropy_bits: MAX_DNA_ENTROPY_BITS,
-                entropy_fraction: if MAX_DNA_ENTROPY_BITS == 0.0 {
-                    0.0
-                } else {
-                    entropy_bits / MAX_DNA_ENTROPY_BITS
-                },
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let mean_entropy_bits = if positions.is_empty() {
-        0.0
-    } else {
-        positions
-            .iter()
-            .map(|position| position.entropy_bits)
-            .sum::<f64>()
-            / positions.len() as f64
-    };
+    let region_len = usize::try_from(region.stop - region.start).unwrap_or_default();
+    let max_entropy_bits = region_len as f64 * DNA_BITS_PER_BASE;
+    let sequence_entropy_bits = sequence_entropy_bits(&state.sequences);
 
     RandomRegionResult {
         region_id: region.region.region_id.clone(),
@@ -211,39 +139,29 @@ fn build_region_result(
         covered_count: state.covered_count,
         covered_fraction: crate::report::fraction(state.covered_count, sampled_count),
         short_read_count: state.short_read_count,
-        mean_entropy_bits,
-        max_entropy_bits: MAX_DNA_ENTROPY_BITS,
-        mean_entropy_fraction: if MAX_DNA_ENTROPY_BITS == 0.0 {
+        unique_sequence_count: state.sequences.len(),
+        sequence_entropy_bits,
+        max_entropy_bits,
+        sequence_entropy_fraction: if max_entropy_bits == 0.0 {
             0.0
         } else {
-            mean_entropy_bits / MAX_DNA_ENTROPY_BITS
+            sequence_entropy_bits / max_entropy_bits
         },
-        positions,
+        top_sequences: top_sequences(&state.sequences, TOP_SEQUENCE_LIMIT),
     }
 }
 
-fn increment_base(position: &mut PositionState, base: char) {
-    match base.to_ascii_uppercase() {
-        'A' => position.a += 1,
-        'C' => position.c += 1,
-        'G' => position.g += 1,
-        'T' => position.t += 1,
-        'N' => position.n += 1,
-        _ => position.other += 1,
-    }
-}
-
-fn entropy_bits(position: &PositionState) -> f64 {
-    let total = (position.a + position.c + position.g + position.t) as f64;
+fn sequence_entropy_bits(sequences: &HashMap<String, usize>) -> f64 {
+    let total = sequences.values().sum::<usize>() as f64;
     if total == 0.0 {
         return 0.0;
     }
 
-    [position.a, position.c, position.g, position.t]
-        .into_iter()
-        .filter(|count| *count > 0)
+    sequences
+        .values()
+        .filter(|count| **count > 0)
         .map(|count| {
-            let probability = count as f64 / total;
+            let probability = *count as f64 / total;
             -(probability * probability.log2())
         })
         .sum()
@@ -269,31 +187,23 @@ fn render_text(report: &ReportEnvelope<RandomResult>) -> String {
         ));
         for region in &file.results.regions {
             out.push_str(&format!(
-                "region: {} [{}:{}]\n  covered: {} ({})\n  short_reads: {}\n  mean_entropy_bits: {:.4} / {:.4} ({:.4})\n",
+                "region: {} [{}:{}]\n  covered: {} ({})\n  short_reads: {}\n  unique_sequences: {}\n  sequence_entropy_bits: {:.4} / {:.4} ({:.4})\n",
                 region.region_id,
                 region.start,
                 region.stop,
                 region.covered_count,
                 format_fraction(region.covered_count, region.sampled_count),
                 region.short_read_count,
-                region.mean_entropy_bits,
+                region.unique_sequence_count,
+                region.sequence_entropy_bits,
                 region.max_entropy_bits,
-                region.mean_entropy_fraction,
+                region.sequence_entropy_fraction,
             ));
-            out.push_str("  positions:\n");
-            for position in &region.positions {
-                out.push_str(&format!(
-                    "    {} A={} C={} G={} T={} N={} other={} entropy={:.4} fraction={:.4}\n",
-                    position.offset,
-                    position.counts.a,
-                    position.counts.c,
-                    position.counts.g,
-                    position.counts.t,
-                    position.counts.n,
-                    position.counts.other,
-                    position.entropy_bits,
-                    position.entropy_fraction,
-                ));
+            if !region.top_sequences.is_empty() {
+                out.push_str("  top_sequences:\n");
+                for entry in &region.top_sequences {
+                    out.push_str(&format!("    {} {}\n", entry.sequence, entry.count));
+                }
             }
         }
     }
@@ -306,25 +216,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_entropy_bits() {
-        let position = PositionState {
-            a: 1,
-            c: 1,
-            g: 1,
-            t: 1,
-            n: 0,
-            other: 0,
-        };
-        assert!((entropy_bits(&position) - 2.0).abs() < 1e-9);
+    fn test_sequence_entropy_bits_uses_exact_sequence_distribution() {
+        let mut sequences = HashMap::new();
+        sequences.insert("AAA".to_string(), 2);
+        sequences.insert("AAT".to_string(), 1);
 
-        let position = PositionState {
-            a: 2,
-            c: 0,
-            g: 1,
-            t: 1,
-            n: 0,
-            other: 0,
-        };
-        assert!((entropy_bits(&position) - 1.5).abs() < 1e-9);
+        let entropy = sequence_entropy_bits(&sequences);
+
+        assert!((entropy - 0.9182958340544896).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_sequence_entropy_bits_is_zero_for_empty_distribution() {
+        let entropy = sequence_entropy_bits(&HashMap::new());
+        assert_eq!(entropy, 0.0);
     }
 }

@@ -284,7 +284,7 @@ fn test_coverage_surfaces_duplicate_assignment_warnings() {
 }
 
 #[test]
-fn test_random_json_reports_entropy_against_max() {
+fn test_random_json_reports_sequence_entropy_against_max() {
     let observed = run_success(&[
         "random",
         "--format",
@@ -311,17 +311,24 @@ fn test_random_json_reports_entropy_against_max() {
 
     assert_eq!(umi["covered_count"], 4);
     assert_eq!(umi["short_read_count"], 1);
-    assert!((umi["mean_entropy_bits"].as_f64().unwrap() - 1.5).abs() < 1e-9);
-    assert!((umi["mean_entropy_fraction"].as_f64().unwrap() - 0.75).abs() < 1e-9);
-    assert_eq!(umi["positions"][0]["counts"]["a"], 2);
-    assert_eq!(umi["positions"][0]["counts"]["g"], 1);
-    assert_eq!(umi["positions"][0]["counts"]["t"], 1);
-    assert!((umi["positions"][0]["entropy_bits"].as_f64().unwrap() - 1.5).abs() < 1e-9);
+    assert_eq!(umi["unique_sequence_count"], 3);
+    assert!((umi["sequence_entropy_bits"].as_f64().unwrap() - 1.5).abs() < 1e-9);
+    assert_eq!(umi["max_entropy_bits"].as_f64().unwrap(), 4.0);
+    assert!((umi["sequence_entropy_fraction"].as_f64().unwrap() - 0.375).abs() < 1e-9);
+    assert_eq!(umi["top_sequences"][0]["sequence"], "AA");
+    assert_eq!(umi["top_sequences"][0]["count"], 2);
+    assert_eq!(umi["top_sequences"][1]["sequence"], "GG");
+    assert_eq!(umi["top_sequences"][2]["sequence"], "TT");
 
     assert_eq!(cdna["covered_count"], 4);
-    assert_eq!(cdna["positions"][0]["counts"]["c"], 3);
-    assert_eq!(cdna["positions"][0]["counts"]["g"], 1);
-    assert!(cdna["mean_entropy_fraction"].as_f64().unwrap() < 0.5);
+    assert_eq!(cdna["unique_sequence_count"], 2);
+    assert_eq!(cdna["top_sequences"][0]["sequence"], "CCCC");
+    assert_eq!(cdna["top_sequences"][0]["count"], 3);
+    assert_eq!(cdna["top_sequences"][1]["sequence"], "GGGG");
+    assert!((cdna["sequence_entropy_bits"].as_f64().unwrap() - 0.8112781244591328).abs() < 1e-12);
+    assert!(
+        (cdna["sequence_entropy_fraction"].as_f64().unwrap() - 0.1014097655573916).abs() < 1e-12
+    );
 }
 
 #[test]

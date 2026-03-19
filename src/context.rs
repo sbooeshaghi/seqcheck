@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
+use flate2::read::GzDecoder;
 use seqspec::assay::Assay;
 use seqspec::file::File;
 use seqspec::onlist::Onlist;
@@ -6,7 +7,9 @@ use seqspec::read::Read;
 use seqspec::region::{Region, RegionCoordinate};
 use serde::Serialize;
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader, Read as IoRead};
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ExpectedRegion {
@@ -144,11 +147,14 @@ pub fn load_onlist(spec_base: &Path, region: &Region) -> Result<LoadedOnlist> {
         .with_context(|| format!("region '{}' has no onlist", region.region_id))?;
     let source = onlist_source(spec_base, onlist);
 
-    let lines = match onlist.urltype.as_str() {
-        "local" => seqspec::utils::read_local_list(Path::new(&source))
-            .map_err(|err| anyhow!("failed to read onlist '{}': {}", source, err))?,
-        "http" | "https" | "ftp" => seqspec::utils::read_remote_list(&source)
-            .map_err(|err| anyhow!("failed to read onlist '{}': {}", source, err))?,
+    let entries = match onlist.urltype.as_str() {
+        "local" => {
+            let lines = seqspec::utils::read_local_list(Path::new(&source))
+                .map_err(|err| anyhow!("failed to read onlist '{}': {}", source, err))?;
+            normalize_onlist_lines(lines)
+        }
+        "http" | "https" | "ftp" => read_remote_onlist_entries(&source)
+            .with_context(|| format!("failed to stream remote onlist '{}'", source))?,
         other => bail!(
             "unsupported onlist urltype '{}' for region '{}'",
             other,
@@ -156,10 +162,7 @@ pub fn load_onlist(spec_base: &Path, region: &Region) -> Result<LoadedOnlist> {
         ),
     };
 
-    Ok(LoadedOnlist {
-        source,
-        entries: normalize_onlist_lines(lines),
-    })
+    Ok(LoadedOnlist { source, entries })
 }
 
 fn resolve_input(
@@ -294,6 +297,60 @@ fn onlist_source(spec_base: &Path, onlist: &Onlist) -> String {
 }
 
 fn normalize_onlist_lines(lines: Vec<String>) -> HashSet<String> {
+    normalize_onlist_reader(std::io::Cursor::new(lines.join("\n"))).unwrap_or_default()
+}
+
+fn normalize_onlist_reader<R>(reader: R) -> Result<HashSet<String>>
+where
+    R: IoRead,
+{
+    let mut entries = HashSet::new();
+    for line in BufReader::new(reader).lines() {
+        let token = line?
+            .split('\t')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !token.is_empty() {
+            entries.insert(token);
+        }
+    }
+    Ok(entries)
+}
+
+fn read_remote_onlist_entries(url: &str) -> Result<HashSet<String>> {
+    let mut child = Command::new("curl")
+        .arg("-fsSL")
+        .arg(url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .with_context(|| format!("failed to spawn curl for '{}'", url))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("curl did not provide stdout for '{}'", url))?;
+
+    let entries = if url.ends_with(".gz") {
+        normalize_onlist_reader(GzDecoder::new(stdout))?
+    } else {
+        normalize_onlist_reader(stdout)?
+    };
+
+    let status = child
+        .wait()
+        .with_context(|| format!("failed to wait for curl while reading '{}'", url))?;
+    if !status.success() {
+        bail!("curl exited with status {} while reading '{}'", status, url);
+    }
+
+    Ok(entries)
+}
+
+#[cfg(test)]
+fn normalize_onlist_tokens(lines: Vec<String>) -> HashSet<String> {
     lines
         .into_iter()
         .filter_map(|line| {
@@ -315,11 +372,16 @@ fn normalize_onlist_lines(lines: Vec<String>) -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
     use seqspec::assay::Assay;
     use seqspec::file::File;
     use seqspec::onlist::Onlist;
     use seqspec::read::Read;
     use seqspec::region::Region;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::thread;
 
     fn sample_file(file_id: &str, filename: &str, url: &str) -> File {
         File::new(
@@ -456,6 +518,71 @@ mod tests {
         assert_eq!(loaded.entries.len(), 2);
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_normalize_onlist_reader_matches_line_tokenizer() {
+        let text = "AAAA\t1\nCCCC\t2\n\nGGGG\n";
+        let observed = normalize_onlist_reader(text.as_bytes()).unwrap();
+        let expected = normalize_onlist_tokens(vec![
+            "AAAA\t1".to_string(),
+            "CCCC\t2".to_string(),
+            String::new(),
+            "GGGG".to_string(),
+        ]);
+
+        assert_eq!(observed, expected);
+    }
+
+    #[test]
+    fn test_normalize_onlist_reader_handles_gzip_stream() {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"AAAA\t1\nCCCC\t2\n").unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let observed = normalize_onlist_reader(GzDecoder::new(&compressed[..])).unwrap();
+
+        assert!(observed.contains("AAAA"));
+        assert!(observed.contains("CCCC"));
+        assert_eq!(observed.len(), 2);
+    }
+
+    #[test]
+    fn test_read_remote_onlist_entries_streams_gzip_over_http() {
+        if Command::new("curl")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_err()
+        {
+            return;
+        }
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"AAAA\t1\nCCCC\t2\n").unwrap();
+        let body = encoder.finish().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+
+        let observed =
+            read_remote_onlist_entries(&format!("http://{}/barcodes.txt.gz", addr)).unwrap();
+
+        server.join().unwrap();
+
+        assert!(observed.contains("AAAA"));
+        assert!(observed.contains("CCCC"));
+        assert_eq!(observed.len(), 2);
     }
 
     #[test]

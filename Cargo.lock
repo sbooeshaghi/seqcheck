@@ -1457,6 +1457,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
+ "flate2",
  "kseq",
  "seqspec",
  "serde",
