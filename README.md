@@ -56,6 +56,23 @@ FASTQ paths are resolved against the spec in this order: `file_id`, `filename`, 
 
 Each successful metric report also includes an `input_check` block. It records the expected FASTQ inventory from the seqspec for that modality, the supplied inputs, the resolved matches, and any expected files that were not supplied. Missing expected files are warnings, not hard failures, so subset runs remain valid.
 
+## Check Catalog
+
+The table below summarizes the read-based checks in `seqcheck`.
+
+| Command | Inputs | Check | Reports |
+| --- | --- | --- | --- |
+| `length` | `spec`, `modality`, one or more FASTQs, optional `n_reads` | Compare each observed read length to the matched read's `min_len` and `max_len` in the seqspec. | Sampled count, expected min/max length, observed min/max length, out-of-range count, out-of-range fraction. |
+| `coverage` | `spec`, `modality`, one or more FASTQs, optional `n_reads` | Project expected regions onto each read and ask whether the observed read is long enough to cover each region. Also flag logical regions that appear in multiple reads. | Expected region coordinates, per-region covered count/fraction, full-read coverage count/fraction, overlap/geometry warnings. |
+| `fixed` | `spec`, `modality`, one or more FASTQs, optional `n_reads` | Extract each `sequence_type=fixed` slice and compare it exactly to the expected sequence. Matching is strand-aware by default. | Sampled count, covered count/fraction, short-read count, exact-match count/fraction, orientation match counts, top non-matching sequences. |
+| `onlist` | `spec`, `modality`, one or more FASTQs, optional `n_reads` | Extract each `sequence_type=onlist` slice and test exact membership in the loaded whitelist. | Sampled count, covered count/fraction, short-read count, exact-onlist count/fraction, offlist count, top offlist sequences, onlist source, onlist size. |
+| `primer` | `spec`, `modality`, one or more FASTQs, optional `n_reads` | Classify the `primer_id` anchor for each read, then scan the full read for exact primer-sequence and reverse-complement hits. | Primer classification, primer sequence/length, start-hit and internal-hit counts/fractions for forward and reverse-complement matches, absent count/fraction, top hit positions. |
+| `random` | `spec`, `modality`, one or more FASTQs, optional `n_reads` | Extract each `sequence_type=random` slice, group exact observed sequences, and compute Shannon entropy over that sequence distribution. | Sampled count, covered count/fraction, short-read count, unique-sequence count, entropy in bits, maximum possible entropy, entropy fraction, top observed sequences. |
+| `cut` | `spec`, `modality`, one or more FASTQs, required `region_id`, optional `n_reads` | Extract the exact sequence slice for one named region from each covered read. | Sampled count, covered count, short-read count, extracted sequence per covered read. |
+| `hist` | `spec`, `modality`, one or more FASTQs, required `region_id`, optional `n_reads` | Extract the exact sequence slice for one named region and count exact sequence occurrences across reads. | Sampled count, covered count, short-read count, exact histogram of observed region sequences. |
+
+`version` is a utility command, not a read check. It reports the `seqcheck` version, the seqspec file version, and the assay id.
+
 ## Examples
 
 Check read lengths with the current DOGMA fixture in the sibling `seqspec` repo:
