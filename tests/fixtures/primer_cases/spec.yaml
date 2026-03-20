@@ -1,0 +1,119 @@
+seqspec_version: 0.4.0
+assay_id: primer-cases
+name: Primer Cases Fixture
+doi: https://doi.org/10.0000/primer-cases
+date: 2026-03-20
+description: Fixture that covers fixed, ghost, and non-scannable primer regions
+modalities:
+  - rna
+lib_struct: ""
+sequence_spec:
+  - read_id: fixed_R1
+    name: Fixed Primer Read
+    modality: rna
+    primer_id: fixed_primer
+    min_len: 6
+    max_len: 6
+    strand: pos
+    files:
+      - file_id: fixed.fastq
+        filename: fixed.fastq
+        filetype: fastq
+        filesize: 0
+        url: fastqs/fixed.fastq
+        urltype: local
+        md5: ""
+  - read_id: ghost_R1
+    name: Ghost Primer Read
+    modality: rna
+    primer_id: ghost_primer
+    min_len: 6
+    max_len: 6
+    strand: pos
+    files:
+      - file_id: ghost.fastq
+        filename: ghost.fastq
+        filetype: fastq
+        filesize: 0
+        url: fastqs/ghost.fastq
+        urltype: local
+        md5: ""
+  - read_id: bad_R1
+    name: Bad Primer Read
+    modality: rna
+    primer_id: bad_primer
+    min_len: 6
+    max_len: 6
+    strand: pos
+    files:
+      - file_id: bad.fastq
+        filename: bad.fastq
+        filetype: fastq
+        filesize: 0
+        url: fastqs/bad.fastq
+        urltype: local
+        md5: ""
+library_spec:
+  - region_id: rna
+    region_type: rna
+    name: Primer Cases RNA
+    sequence_type: joined
+    sequence: ATGCXXXXXXXXXXXXXXXXXXXX
+    min_len: 24
+    max_len: 24
+    onlist: null
+    regions:
+      - region_id: fixed_primer
+        region_type: truseq_read1
+        name: Fixed Primer
+        sequence_type: fixed
+        sequence: ATGC
+        min_len: 4
+        max_len: 4
+        onlist: null
+        regions: []
+      - region_id: fixed_payload
+        region_type: cdna
+        name: Fixed Payload
+        sequence_type: random
+        sequence: XXXXXX
+        min_len: 6
+        max_len: 6
+        onlist: null
+        regions: []
+      - region_id: ghost_primer
+        region_type: truseq_read1
+        name: Ghost Primer
+        sequence_type: fixed
+        sequence: ""
+        min_len: 0
+        max_len: 0
+        onlist: null
+        regions: []
+      - region_id: ghost_payload
+        region_type: cdna
+        name: Ghost Payload
+        sequence_type: random
+        sequence: XXXXXX
+        min_len: 6
+        max_len: 6
+        onlist: null
+        regions: []
+      - region_id: bad_primer
+        region_type: index7
+        name: Bad Primer
+        sequence_type: random
+        sequence: XX
+        min_len: 2
+        max_len: 2
+        onlist: null
+        regions: []
+      - region_id: bad_payload
+        region_type: cdna
+        name: Bad Payload
+        sequence_type: random
+        sequence: XXXXXX
+        min_len: 6
+        max_len: 6
+        onlist: null
+        regions: []

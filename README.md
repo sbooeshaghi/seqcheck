@@ -34,6 +34,7 @@ The current Rust implementation is exact-only. It does not do fuzzy barcode matc
 - `coverage`: report how often each expected region is fully covered by the read
 - `fixed`: check exact matches for fixed-sequence regions
 - `onlist`: check exact onlist membership for onlist regions
+- `primer`: classify the primer anchor and scan reads for exact primer or reverse-complement hits
 - `random`: summarize whole-sequence entropy for `sequence_type=random` regions by grouping exact observed sequences and comparing that entropy to the theoretical DNA maximum for the region length
 - `cut`: extract an exact region slice from each covered read
 - `hist`: count exact region slices across reads
@@ -52,6 +53,8 @@ seqcheck <command> -s SPEC -m MODALITY [-n N] [--format text|json] FASTQ...
 - `FASTQ...`: one or more FASTQ files to inspect
 
 FASTQ paths are resolved against the spec in this order: `file_id`, `filename`, `url` basename, then `read_id`.
+
+Each successful metric report also includes an `input_check` block. It records the expected FASTQ inventory from the seqspec for that modality, the supplied inputs, the resolved matches, and any expected files that were not supplied. Missing expected files are warnings, not hard failures, so subset runs remain valid.
 
 ## Examples
 
@@ -111,6 +114,7 @@ Each metric command emits the same JSON envelope:
 - `modality`
 - `command`
 - `n_reads`
+- `input_check`
 - `files`
 
 Each file entry contains:
@@ -126,9 +130,10 @@ The `results` payload depends on the command:
 - `length`: expected and observed read length ranges
 - `coverage`: expected coordinates and coverage fractions
 - `coverage` also emits warnings when the same `region_id` or biological `region_type` is assigned to multiple reads in one invocation. This is the main guardrail for the failure mode shown in the CRISPR presentation under `docs/`.
-- `fixed`: per-region fixed-sequence match counts and top mismatches
+- `fixed`: per-region fixed-sequence match counts, strand-aware orientation counts, and top mismatches
 - `onlist`: per-region onlist match counts and top offlist sequences
 - `onlist` reads remote whitelist files directly from their URL. It does not require you to stage the file locally first.
+- `primer`: primer classification, exact primer-hit fractions, and dominant hit positions
 - `random`: per-region exact-sequence counts, Shannon entropy in bits over the observed sequence distribution, and entropy as a fraction of the theoretical `2 * region_length` DNA maximum
 - `cut`: extracted region sequences
 - `hist`: counts of extracted region sequences
@@ -137,8 +142,12 @@ The `results` payload depends on the command:
 
 - `examples/10xv3/spec.yaml` is a current-format local example used to test index-read behavior.
 - `tests/fixtures/synthetic/` contains a small fully local assay used for golden CLI tests.
+- `tests/fixtures/primer_cases/` covers fixed, ghost, and non-scannable primer definitions.
+- `tests/fixtures/neg_fixed/` covers reverse-complement fixed matching on a negative-strand read.
 - `examples/dogmaseq-lll/spec.yaml` is legacy prototype material. It is not the source-of-truth test fixture for the current Rust implementation.
 
 ## Notes
 
 The presentation in [docs/Example of seqspec Failing in the CRISPR-pipeline.pptx](docs/Example%20of%20seqspec%20Failing%20in%20the%20CRISPR-pipeline.pptx) shows the motivating failure mode for this tool: a spec can be internally valid but still place biological elements in the wrong reads because of human geometry encoding choices. The `coverage` command now surfaces this explicitly with duplicate-assignment warnings, and `fixed` plus `onlist` check whether the observed read content matches the encoded positions.
+
+The `primer` command adds another direct geometry check. Sequencing usually starts at the primer, so the primer sequence itself should usually not appear inside the read. If primer hits are common, or if the primer definition is not a concrete fixed sequence, that is a strong signal that the seqspec is anchoring the read incorrectly.

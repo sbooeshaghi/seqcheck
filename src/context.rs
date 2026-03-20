@@ -6,7 +6,7 @@ use seqspec::onlist::Onlist;
 use seqspec::read::Read;
 use seqspec::region::{Region, RegionCoordinate};
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, BufReader, Read as IoRead};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -23,12 +23,62 @@ pub struct ExpectedRegion {
 }
 
 #[derive(Debug, Clone)]
+pub struct LoadedInputs {
+    pub spec: Assay,
+    pub input_check: InputCheck,
+    pub warnings: Vec<String>,
+    pub inputs: Vec<ResolvedInput>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ExpectedFile {
+    pub read_id: String,
+    pub file_id: String,
+    pub filename: String,
+    pub url_basename: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MatchedInput {
+    pub input_path: PathBuf,
+    pub read_id: String,
+    pub file_id: String,
+    pub matched_by: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct InputCheck {
+    pub expected_files: Vec<ExpectedFile>,
+    pub supplied_inputs: Vec<PathBuf>,
+    pub matched_inputs: Vec<MatchedInput>,
+    pub missing_expected_files: Vec<ExpectedFile>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimerClassificationKind {
+    FixedScannable,
+    GhostPrimer,
+    NonScannablePrimer,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PrimerClassification {
+    pub kind: PrimerClassificationKind,
+    pub scannable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ResolvedInput {
     pub input_path: PathBuf,
     pub read: Read,
     pub matched_file: Option<File>,
     pub matched_by: String,
     pub coordinates: Vec<RegionCoordinate>,
+    pub primer_region: Region,
+    pub primer_classification: PrimerClassification,
     pub spec_base: PathBuf,
 }
 
@@ -76,6 +126,13 @@ impl ResolvedInput {
             .max()
             .unwrap_or_default()
     }
+
+    pub fn match_key(&self) -> (String, Option<String>) {
+        (
+            self.read.read_id.clone(),
+            self.matched_file.as_ref().map(|file| file.file_id.clone()),
+        )
+    }
 }
 
 pub fn load_spec(spec_path: &Path) -> Result<Assay> {
@@ -90,19 +147,49 @@ pub fn load_resolved_inputs(
     spec_path: &Path,
     modality: &str,
     fastqs: &[PathBuf],
-) -> Result<(Assay, Vec<ResolvedInput>)> {
+) -> Result<LoadedInputs> {
     let spec = load_spec(spec_path)?;
     let spec_base = spec_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
+    let expected_files = expected_files_for_modality(&spec, modality)?;
 
     let inputs = fastqs
         .iter()
         .map(|fastq| resolve_input(&spec, modality, &spec_base, fastq))
         .collect::<Result<Vec<_>>>()?;
 
-    Ok((spec, inputs))
+    ensure_unique_matches(&inputs)?;
+
+    let input_check = build_input_check(expected_files, fastqs, &inputs);
+    let mut warnings = Vec::new();
+
+    if !input_check.missing_expected_files.is_empty() {
+        warnings.push(format!(
+            "missing expected modality files were not supplied: {}",
+            input_check
+                .missing_expected_files
+                .iter()
+                .map(describe_expected_file)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    warnings.extend(
+        inputs
+            .iter()
+            .filter_map(build_primer_warning)
+            .collect::<Vec<_>>(),
+    );
+
+    Ok(LoadedInputs {
+        spec,
+        input_check,
+        warnings,
+        inputs,
+    })
 }
 
 pub fn filter_regions_by_id(
@@ -181,6 +268,8 @@ fn resolve_input(
         .ok_or_else(|| anyhow!("invalid FASTQ path: {}", input_path.display()))?;
 
     let candidate = resolve_candidate(spec, modality, basename)?;
+    let primer_region = resolve_primer_region(spec, modality, &candidate.read)?;
+    let primer_classification = classify_primer_region(&primer_region);
     let (_, regions) =
         seqspec::utils::map_read_id_to_regions(spec, modality, &candidate.read.read_id)
             .map_err(|err| anyhow!("failed to map read '{}': {}", candidate.read.read_id, err))?;
@@ -196,6 +285,8 @@ fn resolve_input(
         matched_file: candidate.matched_file,
         matched_by: candidate.matched_by.to_string(),
         coordinates,
+        primer_region,
+        primer_classification,
         spec_base: spec_base.to_path_buf(),
     })
 }
@@ -294,6 +385,185 @@ fn onlist_source(spec_base: &Path, onlist: &Onlist) -> String {
     } else {
         onlist.url.clone()
     }
+}
+
+fn expected_files_for_modality(spec: &Assay, modality: &str) -> Result<Vec<ExpectedFile>> {
+    let reads = spec.get_seqspec(modality);
+    if reads.is_empty() {
+        bail!("modality '{}' is not present in the seqspec", modality);
+    }
+
+    Ok(reads
+        .into_iter()
+        .flat_map(|read| {
+            read.files.into_iter().map(move |file| ExpectedFile {
+                read_id: read.read_id.clone(),
+                file_id: file.file_id,
+                filename: file.filename.clone(),
+                url_basename: Path::new(&file.url)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+        })
+        .collect())
+}
+
+fn build_input_check(
+    expected_files: Vec<ExpectedFile>,
+    fastqs: &[PathBuf],
+    inputs: &[ResolvedInput],
+) -> InputCheck {
+    let matched_inputs = inputs
+        .iter()
+        .map(|input| MatchedInput {
+            input_path: input.input_path.clone(),
+            read_id: input.read.read_id.clone(),
+            file_id: input.file_id(),
+            matched_by: input.matched_by.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let matched_keys = inputs
+        .iter()
+        .filter_map(|input| {
+            input
+                .matched_file
+                .as_ref()
+                .map(|file| (input.read.read_id.clone(), file.file_id.clone()))
+        })
+        .collect::<HashSet<_>>();
+
+    let missing_expected_files = expected_files
+        .iter()
+        .filter(|expected| {
+            !matched_keys.contains(&(expected.read_id.clone(), expected.file_id.clone()))
+        })
+        .cloned()
+        .collect();
+
+    InputCheck {
+        expected_files,
+        supplied_inputs: fastqs.to_vec(),
+        matched_inputs,
+        missing_expected_files,
+    }
+}
+
+fn ensure_unique_matches(inputs: &[ResolvedInput]) -> Result<()> {
+    let mut seen = BTreeMap::<(String, Option<String>), PathBuf>::new();
+
+    for input in inputs {
+        let key = input.match_key();
+        if let Some(previous_path) = seen.insert(key.clone(), input.input_path.clone()) {
+            let file_label = key
+                .1
+                .as_deref()
+                .map(|file_id| format!("file '{}'", file_id))
+                .unwrap_or_else(|| "read-only match".to_string());
+            bail!(
+                "FASTQ '{}' and '{}' both resolved to read '{}' ({})",
+                previous_path.display(),
+                input.input_path.display(),
+                key.0,
+                file_label
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_primer_region(spec: &Assay, modality: &str, read: &Read) -> Result<Region> {
+    let libspec = spec
+        .get_libspec(modality)
+        .ok_or_else(|| anyhow!("modality '{}' is not present in the library_spec", modality))?;
+
+    libspec
+        .get_region_by_id(&read.primer_id)
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            anyhow!(
+                "read '{}' primer_id '{}' does not resolve to a region in modality '{}'",
+                read.read_id,
+                read.primer_id,
+                modality
+            )
+        })
+}
+
+fn classify_primer_region(region: &Region) -> PrimerClassification {
+    let primer_len = usize::try_from(region.max_len.max(0)).unwrap_or_default();
+    if primer_len == 0 {
+        return PrimerClassification {
+            kind: PrimerClassificationKind::GhostPrimer,
+            scannable: false,
+            reason: Some("zero-length primer anchor".to_string()),
+        };
+    }
+
+    if region.sequence_type != "fixed" {
+        return PrimerClassification {
+            kind: PrimerClassificationKind::NonScannablePrimer,
+            scannable: false,
+            reason: Some(format!(
+                "sequence_type '{}' is not fixed",
+                region.sequence_type
+            )),
+        };
+    }
+
+    if region.sequence.is_empty() {
+        return PrimerClassification {
+            kind: PrimerClassificationKind::NonScannablePrimer,
+            scannable: false,
+            reason: Some("fixed primer sequence is empty".to_string()),
+        };
+    }
+
+    if !sequence_is_concrete_dna(&region.sequence) {
+        return PrimerClassification {
+            kind: PrimerClassificationKind::NonScannablePrimer,
+            scannable: false,
+            reason: Some("fixed primer sequence contains non-ACGT characters".to_string()),
+        };
+    }
+
+    PrimerClassification {
+        kind: PrimerClassificationKind::FixedScannable,
+        scannable: true,
+        reason: None,
+    }
+}
+
+fn sequence_is_concrete_dna(sequence: &str) -> bool {
+    sequence
+        .chars()
+        .all(|base| matches!(base.to_ascii_uppercase(), 'A' | 'C' | 'G' | 'T'))
+}
+
+fn build_primer_warning(input: &ResolvedInput) -> Option<String> {
+    if input.primer_classification.kind != PrimerClassificationKind::NonScannablePrimer {
+        return None;
+    }
+
+    Some(format!(
+        "read '{}' primer_id '{}' points to a non-scannable primer region '{}': {}",
+        input.read.read_id,
+        input.read.primer_id,
+        input.primer_region.region_id,
+        input
+            .primer_classification
+            .reason
+            .clone()
+            .unwrap_or_else(|| "unknown reason".to_string())
+    ))
+}
+
+fn describe_expected_file(expected: &ExpectedFile) -> String {
+    format!("{} (read_id {})", expected.file_id, expected.read_id)
 }
 
 fn normalize_onlist_lines(lines: Vec<String>) -> HashSet<String> {
@@ -482,6 +752,16 @@ mod tests {
         )
     }
 
+    fn primer_region(assay: &Assay, region_id: &str) -> Region {
+        assay
+            .get_libspec("rna")
+            .unwrap()
+            .get_region_by_id(region_id)
+            .into_iter()
+            .next()
+            .unwrap()
+    }
+
     #[test]
     fn test_resolve_candidate_matches_by_file_id() {
         let candidate = resolve_candidate(&sample_assay(), "rna", "R1.fastq.gz").unwrap();
@@ -586,6 +866,68 @@ mod tests {
     }
 
     #[test]
+    fn test_classify_primer_region_fixed_scannable() {
+        let classification = classify_primer_region(&primer_region(&sample_assay(), "primer"));
+        assert_eq!(
+            classification.kind,
+            PrimerClassificationKind::FixedScannable
+        );
+        assert!(classification.scannable);
+        assert!(classification.reason.is_none());
+    }
+
+    #[test]
+    fn test_classify_primer_region_ghost_primer() {
+        let region = Region::new(
+            "ghost".to_string(),
+            "truseq_read1".to_string(),
+            "Ghost Primer".to_string(),
+            "fixed".to_string(),
+            String::new(),
+            0,
+            0,
+            None,
+            vec![],
+        );
+
+        let classification = classify_primer_region(&region);
+
+        assert_eq!(classification.kind, PrimerClassificationKind::GhostPrimer);
+        assert!(!classification.scannable);
+        assert_eq!(
+            classification.reason.as_deref(),
+            Some("zero-length primer anchor")
+        );
+    }
+
+    #[test]
+    fn test_classify_primer_region_non_scannable() {
+        let region = Region::new(
+            "bad_primer".to_string(),
+            "barcode".to_string(),
+            "Bad Primer".to_string(),
+            "random".to_string(),
+            "XX".to_string(),
+            2,
+            2,
+            None,
+            vec![],
+        );
+
+        let classification = classify_primer_region(&region);
+
+        assert_eq!(
+            classification.kind,
+            PrimerClassificationKind::NonScannablePrimer
+        );
+        assert!(!classification.scannable);
+        assert_eq!(
+            classification.reason.as_deref(),
+            Some("sequence_type 'random' is not fixed")
+        );
+    }
+
+    #[test]
     fn test_filter_regions_by_id_finds_expected_region() {
         let assay = sample_assay();
         let spec_base = PathBuf::from(".");
@@ -601,6 +943,8 @@ mod tests {
             matched_file: None,
             matched_by: "read_id".to_string(),
             coordinates,
+            primer_region: primer_region(&assay, "primer"),
+            primer_classification: classify_primer_region(&primer_region(&assay, "primer")),
             spec_base,
         };
 

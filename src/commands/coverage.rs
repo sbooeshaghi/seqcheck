@@ -1,5 +1,7 @@
 use crate::context::load_resolved_inputs;
-use crate::report::{format_fraction, write_report, FileReport, ReportEnvelope};
+use crate::report::{
+    format_fraction, render_report_prelude, write_report, FileReport, ReportEnvelope,
+};
 use crate::scan::{is_region_covered, scan_fastq};
 use crate::CommonMetricArgs;
 use anyhow::Result;
@@ -40,11 +42,17 @@ struct CoverageState {
 }
 
 pub fn run(args: &CoverageArgs) -> Result<()> {
-    let (_, inputs) = load_resolved_inputs(
+    let loaded = load_resolved_inputs(
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
     )?;
+    let crate::context::LoadedInputs {
+        input_check,
+        warnings: base_warnings,
+        inputs,
+        ..
+    } = loaded;
     let mut files = Vec::new();
 
     for input in inputs {
@@ -109,13 +117,15 @@ pub fn run(args: &CoverageArgs) -> Result<()> {
         });
     }
 
-    let warnings = build_assignment_warnings(&files);
+    let mut warnings = base_warnings;
+    warnings.extend(build_assignment_warnings(&files));
 
     let report = ReportEnvelope {
         spec: args.common.spec.clone(),
         modality: args.common.modality.clone(),
         command: "coverage".to_string(),
         n_reads: args.common.n_reads,
+        input_check,
         warnings,
         files,
     };
@@ -129,20 +139,7 @@ pub fn run(args: &CoverageArgs) -> Result<()> {
 }
 
 fn render_text(report: &ReportEnvelope<CoverageResult>) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "seqcheck coverage\nspec: {}\nmodality: {}\nrequested_reads: {}\n",
-        report.spec.display(),
-        report.modality,
-        report.n_reads
-    ));
-
-    if !report.warnings.is_empty() {
-        out.push_str("warnings:\n");
-        for warning in &report.warnings {
-            out.push_str(&format!("  - {}\n", warning));
-        }
-    }
+    let mut out = render_report_prelude("coverage", report);
 
     for file in &report.files {
         let results = &file.results;

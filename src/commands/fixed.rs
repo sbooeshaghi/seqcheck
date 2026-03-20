@@ -1,8 +1,10 @@
 use crate::context::{filter_regions_by_sequence_type, load_resolved_inputs};
 use crate::report::{
-    format_fraction, top_sequences, write_report, FileReport, ReportEnvelope, SequenceCount,
+    format_fraction, render_report_prelude, top_sequences, write_report, FileReport,
+    ReportEnvelope, SequenceCount,
 };
 use crate::scan::{extract_region, scan_fastq};
+use crate::sequence::{complement_sequence, reverse_complement_sequence, reverse_sequence};
 use crate::CommonMetricArgs;
 use anyhow::Result;
 use serde::Serialize;
@@ -14,6 +16,14 @@ const TOP_SEQUENCE_LIMIT: usize = 10;
 pub struct FixedArgs {
     #[command(flatten)]
     pub common: CommonMetricArgs,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct OrientationCounts {
+    pub forward: usize,
+    pub reverse: usize,
+    pub complement: usize,
+    pub reverse_complement: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,6 +40,7 @@ pub struct FixedRegionResult {
     pub short_read_count: usize,
     pub exact_match_count: usize,
     pub exact_match_fraction: f64,
+    pub orientation_counts: OrientationCounts,
     pub top_nonmatching_sequences: Vec<SequenceCount>,
 }
 
@@ -44,15 +55,22 @@ struct FixedRegionState {
     covered_count: usize,
     short_read_count: usize,
     exact_match_count: usize,
+    orientation_counts: OrientationCounts,
     mismatches: HashMap<String, usize>,
 }
 
 pub fn run(args: &FixedArgs) -> Result<()> {
-    let (_, inputs) = load_resolved_inputs(
+    let loaded = load_resolved_inputs(
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
     )?;
+    let crate::context::LoadedInputs {
+        input_check,
+        warnings,
+        inputs,
+        ..
+    } = loaded;
     let mut files = Vec::new();
 
     for input in inputs {
@@ -60,6 +78,11 @@ pub fn run(args: &FixedArgs) -> Result<()> {
         let read_id = input.read.read_id.clone();
         let file_id = input.file_id();
         let matched_by = input.matched_by.clone();
+        let primary_orientation = if input.read.strand == "neg" {
+            ExpectedOrientation::ReverseComplement
+        } else {
+            ExpectedOrientation::Forward
+        };
         let fixed_regions = filter_regions_by_sequence_type(&input, "fixed");
         let state = vec![FixedRegionState::default(); fixed_regions.len()];
         let regions = fixed_regions.clone();
@@ -73,7 +96,15 @@ pub fn run(args: &FixedArgs) -> Result<()> {
                     match extract_region(sequence, region) {
                         Some(observed) => {
                             state[idx].covered_count += 1;
-                            if observed == region.region.sequence {
+                            let expected = expected_sequences(&region.region.sequence);
+                            update_orientation_counts(
+                                &mut state[idx].orientation_counts,
+                                &observed,
+                                &expected,
+                            );
+
+                            let primary_expected = primary_orientation.sequence(&expected);
+                            if observed == primary_expected {
                                 state[idx].exact_match_count += 1;
                             } else {
                                 *state[idx].mismatches.entry(observed).or_insert(0) += 1;
@@ -107,6 +138,7 @@ pub fn run(args: &FixedArgs) -> Result<()> {
                     state[idx].exact_match_count,
                     state[idx].covered_count,
                 ),
+                orientation_counts: state[idx].orientation_counts.clone(),
                 top_nonmatching_sequences: top_sequences(
                     &state[idx].mismatches,
                     TOP_SEQUENCE_LIMIT,
@@ -131,7 +163,8 @@ pub fn run(args: &FixedArgs) -> Result<()> {
         modality: args.common.modality.clone(),
         command: "fixed".to_string(),
         n_reads: args.common.n_reads,
-        warnings: Vec::new(),
+        input_check,
+        warnings,
         files,
     };
 
@@ -144,13 +177,7 @@ pub fn run(args: &FixedArgs) -> Result<()> {
 }
 
 fn render_text(report: &ReportEnvelope<FixedResult>) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "seqcheck fixed\nspec: {}\nmodality: {}\nrequested_reads: {}\n",
-        report.spec.display(),
-        report.modality,
-        report.n_reads
-    ));
+    let mut out = render_report_prelude("fixed", report);
 
     for file in &report.files {
         out.push_str(&format!(
@@ -174,6 +201,13 @@ fn render_text(report: &ReportEnvelope<FixedResult>) -> String {
                 region.exact_match_count,
                 format_fraction(region.exact_match_count, region.covered_count),
             ));
+            out.push_str(&format!(
+                "  orientation_matches:\n    forward: {}\n    reverse: {}\n    complement: {}\n    reverse_complement: {}\n",
+                region.orientation_counts.forward,
+                region.orientation_counts.reverse,
+                region.orientation_counts.complement,
+                region.orientation_counts.reverse_complement,
+            ));
             if !region.top_nonmatching_sequences.is_empty() {
                 out.push_str("  top_nonmatching_sequences:\n");
                 for entry in &region.top_nonmatching_sequences {
@@ -184,4 +218,55 @@ fn render_text(report: &ReportEnvelope<FixedResult>) -> String {
     }
 
     out
+}
+
+#[derive(Debug, Clone)]
+struct ExpectedSequences {
+    forward: String,
+    reverse: String,
+    complement: String,
+    reverse_complement: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ExpectedOrientation {
+    Forward,
+    ReverseComplement,
+}
+
+impl ExpectedOrientation {
+    fn sequence<'a>(&self, expected: &'a ExpectedSequences) -> &'a str {
+        match self {
+            ExpectedOrientation::Forward => &expected.forward,
+            ExpectedOrientation::ReverseComplement => &expected.reverse_complement,
+        }
+    }
+}
+
+fn expected_sequences(sequence: &str) -> ExpectedSequences {
+    ExpectedSequences {
+        forward: sequence.to_string(),
+        reverse: reverse_sequence(sequence),
+        complement: complement_sequence(sequence),
+        reverse_complement: reverse_complement_sequence(sequence),
+    }
+}
+
+fn update_orientation_counts(
+    counts: &mut OrientationCounts,
+    observed: &str,
+    expected: &ExpectedSequences,
+) {
+    if observed == expected.forward {
+        counts.forward += 1;
+    }
+    if observed == expected.reverse {
+        counts.reverse += 1;
+    }
+    if observed == expected.complement {
+        counts.complement += 1;
+    }
+    if observed == expected.reverse_complement {
+        counts.reverse_complement += 1;
+    }
 }

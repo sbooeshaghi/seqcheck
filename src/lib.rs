@@ -2,6 +2,7 @@ pub mod commands;
 pub mod context;
 pub mod report;
 pub mod scan;
+pub mod sequence;
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
@@ -27,6 +28,7 @@ pub enum Commands {
     Hist(commands::hist::HistArgs),
     Length(commands::length::LengthArgs),
     Onlist(commands::onlist::OnlistArgs),
+    Primer(commands::primer::PrimerArgs),
     Random(commands::random::RandomArgs),
     Version(commands::version::VersionArgs),
 }
@@ -86,6 +88,7 @@ pub fn run() -> Result<()> {
         Commands::Hist(args) => commands::hist::run(&args),
         Commands::Length(args) => commands::length::run(&args),
         Commands::Onlist(args) => commands::onlist::run(&args),
+        Commands::Primer(args) => commands::primer::run(&args),
         Commands::Random(args) => commands::random::run(&args),
         Commands::Version(args) => commands::version::run(&args),
     }

@@ -23,6 +23,23 @@ fn run_success(args: &[&str]) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+fn run_failure(args: &[&str]) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_seqcheck"))
+        .current_dir(manifest_dir())
+        .args(args)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "command unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    String::from_utf8(output.stderr).unwrap()
+}
+
 #[test]
 fn test_length_json_synthetic_golden() {
     let observed = run_success(&[
@@ -43,6 +60,28 @@ fn test_length_json_synthetic_golden() {
   "modality": "rna",
   "command": "length",
   "n_reads": 0,
+  "input_check": {
+    "expected_files": [
+      {
+        "read_id": "synthetic_R1",
+        "file_id": "synthetic_R1.fastq",
+        "filename": "synthetic_R1.fastq",
+        "url_basename": "synthetic_R1.fastq"
+      }
+    ],
+    "supplied_inputs": [
+      "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq"
+    ],
+    "matched_inputs": [
+      {
+        "input_path": "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+        "read_id": "synthetic_R1",
+        "file_id": "synthetic_R1.fastq",
+        "matched_by": "file_id"
+      }
+    ],
+    "missing_expected_files": []
+  },
   "files": [
     {
       "input_path": "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
@@ -83,6 +122,15 @@ fn test_fixed_text_synthetic_golden() {
 spec: tests/fixtures/synthetic/spec.yaml
 modality: rna
 requested_reads: 0
+input_check:
+  expected_files:
+    - synthetic_R1.fastq (read_id synthetic_R1, filename synthetic_R1.fastq, url_basename synthetic_R1.fastq)
+  supplied_inputs:
+    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
+  matched_inputs:
+    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq -> synthetic_R1.fastq (read_id synthetic_R1 via file_id)
+  missing_expected_files:
+    (none)
 
 file: tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
 read_id: synthetic_R1
@@ -93,6 +141,11 @@ region: linker [4:6] expected=TT
   covered: 4 (0.8000)
   short_reads: 1
   exact_matches: 3 (0.7500)
+  orientation_matches:
+    forward: 3
+    reverse: 3
+    complement: 0
+    reverse_complement: 0
   top_nonmatching_sequences:
     AC 1
 "#;
@@ -117,6 +170,15 @@ fn test_onlist_text_synthetic_golden() {
 spec: tests/fixtures/synthetic/spec.yaml
 modality: rna
 requested_reads: 0
+input_check:
+  expected_files:
+    - synthetic_R1.fastq (read_id synthetic_R1, filename synthetic_R1.fastq, url_basename synthetic_R1.fastq)
+  supplied_inputs:
+    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
+  matched_inputs:
+    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq -> synthetic_R1.fastq (read_id synthetic_R1 via file_id)
+  missing_expected_files:
+    (none)
 
 file: tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
 read_id: synthetic_R1
@@ -153,6 +215,15 @@ fn test_cut_and_hist_text_synthetic_golden() {
 spec: tests/fixtures/synthetic/spec.yaml
 modality: rna
 requested_reads: 0
+input_check:
+  expected_files:
+    - synthetic_R1.fastq (read_id synthetic_R1, filename synthetic_R1.fastq, url_basename synthetic_R1.fastq)
+  supplied_inputs:
+    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
+  matched_inputs:
+    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq -> synthetic_R1.fastq (read_id synthetic_R1 via file_id)
+  missing_expected_files:
+    (none)
 
 file: tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
 read_id: synthetic_R1
@@ -185,6 +256,15 @@ short_reads: 1
 spec: tests/fixtures/synthetic/spec.yaml
 modality: rna
 requested_reads: 0
+input_check:
+  expected_files:
+    - synthetic_R1.fastq (read_id synthetic_R1, filename synthetic_R1.fastq, url_basename synthetic_R1.fastq)
+  supplied_inputs:
+    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
+  matched_inputs:
+    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq -> synthetic_R1.fastq (read_id synthetic_R1 via file_id)
+  missing_expected_files:
+    (none)
 
 file: tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
 read_id: synthetic_R1
@@ -220,6 +300,13 @@ fn test_coverage_json_uses_current_seqspec_fixture() {
 
     assert_eq!(parsed["modality"], "rna");
     assert_eq!(parsed["command"], "coverage");
+    assert_eq!(
+        parsed["input_check"]["missing_expected_files"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
     assert_eq!(parsed["files"].as_array().unwrap().len(), 2);
     assert_eq!(parsed["files"][0]["read_id"], "rna_R1");
     assert_eq!(
@@ -284,6 +371,79 @@ fn test_coverage_surfaces_duplicate_assignment_warnings() {
 }
 
 #[test]
+fn test_subset_input_check_warns_and_succeeds() {
+    let observed = run_success(&[
+        "length",
+        "--format",
+        "json",
+        "-s",
+        "../seqspec/tests/fixtures/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "10",
+        "../seqspec/tests/fixtures/fastqs/rna_R1_SRR18677638.fastq.gz",
+    ]);
+    let parsed: Value = serde_json::from_str(&observed).unwrap();
+
+    assert_eq!(
+        parsed["input_check"]["matched_inputs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        parsed["input_check"]["missing_expected_files"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        parsed["input_check"]["missing_expected_files"][0]["read_id"],
+        "rna_R2"
+    );
+    assert!(parsed["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap()
+            .contains("missing expected modality files")));
+}
+
+#[test]
+fn test_duplicate_resolved_input_fails_before_scanning() {
+    let stderr = run_failure(&[
+        "length",
+        "-s",
+        "tests/fixtures/synthetic/spec.yaml",
+        "-m",
+        "rna",
+        "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+        "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+    ]);
+
+    assert!(stderr.contains("both resolved to read 'synthetic_R1'"));
+}
+
+#[test]
+fn test_unmatched_input_fails_before_scanning() {
+    let stderr = run_failure(&[
+        "length",
+        "-s",
+        "tests/fixtures/synthetic/spec.yaml",
+        "-m",
+        "rna",
+        "tests/fixtures/synthetic/fastqs/unmatched.fastq",
+    ]);
+
+    assert!(stderr.contains("could not match 'unmatched.fastq'"));
+}
+
+#[test]
 fn test_random_json_reports_sequence_entropy_against_max() {
     let observed = run_success(&[
         "random",
@@ -329,6 +489,128 @@ fn test_random_json_reports_sequence_entropy_against_max() {
     assert!(
         (cdna["sequence_entropy_fraction"].as_f64().unwrap() - 0.1014097655573916).abs() < 1e-12
     );
+}
+
+#[test]
+fn test_fixed_json_matches_reverse_complement_on_negative_strand() {
+    let observed = run_success(&[
+        "fixed",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/neg_fixed/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/neg_fixed/fastqs/neg.fastq",
+    ]);
+    let parsed: Value = serde_json::from_str(&observed).unwrap();
+    let regions = parsed["files"][0]["results"]["regions"].as_array().unwrap();
+    let target = regions
+        .iter()
+        .find(|region| region["region_id"] == "target")
+        .unwrap();
+
+    assert_eq!(target["exact_match_count"], 3);
+    assert_eq!(
+        target["top_nonmatching_sequences"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    assert_eq!(target["orientation_counts"]["forward"], 0);
+    assert_eq!(target["orientation_counts"]["reverse_complement"], 3);
+}
+
+#[test]
+fn test_primer_json_reports_hits_and_classification() {
+    let observed = run_success(&[
+        "primer",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/primer_cases/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/primer_cases/fastqs/fixed.fastq",
+    ]);
+    let parsed: Value = serde_json::from_str(&observed).unwrap();
+    let results = &parsed["files"][0]["results"];
+
+    assert_eq!(results["primer_classification"]["kind"], "fixed_scannable");
+    assert_eq!(results["primer_classification"]["scannable"], true);
+    assert_eq!(results["forward_start_hit_count"], 1);
+    assert_eq!(results["forward_internal_hit_count"], 1);
+    assert_eq!(results["reverse_complement_start_hit_count"], 1);
+    assert_eq!(results["reverse_complement_internal_hit_count"], 1);
+    assert_eq!(results["absent_count"], 1);
+    assert_eq!(results["forward_hit_positions"][0]["position"], 0);
+    assert_eq!(results["forward_hit_positions"][1]["position"], 2);
+    assert_eq!(
+        parsed["input_check"]["missing_expected_files"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn test_primer_json_reports_ghost_primer() {
+    let observed = run_success(&[
+        "primer",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/primer_cases/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/primer_cases/fastqs/ghost.fastq",
+    ]);
+    let parsed: Value = serde_json::from_str(&observed).unwrap();
+    let results = &parsed["files"][0]["results"];
+
+    assert_eq!(results["primer_classification"]["kind"], "ghost_primer");
+    assert_eq!(results["primer_classification"]["scannable"], false);
+    assert_eq!(results["sampled_count"], 3);
+}
+
+#[test]
+fn test_primer_json_reports_non_scannable_primer() {
+    let observed = run_success(&[
+        "primer",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/primer_cases/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/primer_cases/fastqs/bad.fastq",
+    ]);
+    let parsed: Value = serde_json::from_str(&observed).unwrap();
+    let results = &parsed["files"][0]["results"];
+
+    assert_eq!(
+        results["primer_classification"]["kind"],
+        "non_scannable_primer"
+    );
+    assert_eq!(results["primer_classification"]["scannable"], false);
+    assert!(parsed["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .unwrap()
+            .contains("non-scannable primer region 'bad_primer'")));
 }
 
 #[test]

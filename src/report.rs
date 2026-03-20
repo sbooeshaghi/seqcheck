@@ -1,3 +1,4 @@
+use crate::context::{ExpectedFile, InputCheck};
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
@@ -34,6 +35,7 @@ pub struct ReportEnvelope<T> {
     pub modality: String,
     pub command: String,
     pub n_reads: usize,
+    pub input_check: InputCheck,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     pub files: Vec<FileReport<T>>,
@@ -103,6 +105,81 @@ pub fn format_fraction(numerator: usize, denominator: usize) -> String {
     format!("{:.4}", fraction(numerator, denominator))
 }
 
+pub fn render_report_prelude<T>(command: &str, report: &ReportEnvelope<T>) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "seqcheck {}\nspec: {}\nmodality: {}\nrequested_reads: {}\n",
+        command,
+        report.spec.display(),
+        report.modality,
+        report.n_reads
+    ));
+    append_input_check(&mut out, &report.input_check);
+    append_warnings(&mut out, &report.warnings);
+    out
+}
+
+fn append_input_check(out: &mut String, input_check: &InputCheck) {
+    out.push_str("input_check:\n");
+    append_expected_files(out, "expected_files", &input_check.expected_files);
+    append_paths(out, "supplied_inputs", &input_check.supplied_inputs);
+    out.push_str("  matched_inputs:\n");
+    if input_check.matched_inputs.is_empty() {
+        out.push_str("    (none)\n");
+    } else {
+        for matched in &input_check.matched_inputs {
+            out.push_str(&format!(
+                "    - {} -> {} (read_id {} via {})\n",
+                matched.input_path.display(),
+                matched.file_id,
+                matched.read_id,
+                matched.matched_by
+            ));
+        }
+    }
+    append_expected_files(
+        out,
+        "missing_expected_files",
+        &input_check.missing_expected_files,
+    );
+}
+
+fn append_expected_files(out: &mut String, label: &str, files: &[ExpectedFile]) {
+    out.push_str(&format!("  {}:\n", label));
+    if files.is_empty() {
+        out.push_str("    (none)\n");
+    } else {
+        for expected in files {
+            out.push_str(&format!(
+                "    - {} (read_id {}, filename {}, url_basename {})\n",
+                expected.file_id, expected.read_id, expected.filename, expected.url_basename
+            ));
+        }
+    }
+}
+
+fn append_paths(out: &mut String, label: &str, paths: &[PathBuf]) {
+    out.push_str(&format!("  {}:\n", label));
+    if paths.is_empty() {
+        out.push_str("    (none)\n");
+    } else {
+        for path in paths {
+            out.push_str(&format!("    - {}\n", path.display()));
+        }
+    }
+}
+
+fn append_warnings(out: &mut String, warnings: &[String]) {
+    if warnings.is_empty() {
+        return;
+    }
+
+    out.push_str("warnings:\n");
+    for warning in warnings {
+        out.push_str(&format!("  - {}\n", warning));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,6 +216,22 @@ mod tests {
             modality: "rna".to_string(),
             command: "length".to_string(),
             n_reads: 10,
+            input_check: InputCheck {
+                expected_files: vec![ExpectedFile {
+                    read_id: "rna_R1".to_string(),
+                    file_id: "R1.fastq.gz".to_string(),
+                    filename: "R1.fastq.gz".to_string(),
+                    url_basename: "R1.fastq.gz".to_string(),
+                }],
+                supplied_inputs: vec![PathBuf::from("R1.fastq.gz")],
+                matched_inputs: vec![crate::context::MatchedInput {
+                    input_path: PathBuf::from("R1.fastq.gz"),
+                    read_id: "rna_R1".to_string(),
+                    file_id: "R1.fastq.gz".to_string(),
+                    matched_by: "file_id".to_string(),
+                }],
+                missing_expected_files: Vec::new(),
+            },
             warnings: Vec::new(),
             files: vec![FileReport {
                 input_path: PathBuf::from("R1.fastq.gz"),

@@ -1,5 +1,7 @@
 use crate::context::load_resolved_inputs;
-use crate::report::{format_fraction, write_report, FileReport, ReportEnvelope};
+use crate::report::{
+    format_fraction, render_report_prelude, write_report, FileReport, ReportEnvelope,
+};
 use crate::scan::scan_fastq;
 use crate::CommonMetricArgs;
 use anyhow::Result;
@@ -30,11 +32,17 @@ struct LengthState {
 }
 
 pub fn run(args: &LengthArgs) -> Result<()> {
-    let (_, inputs) = load_resolved_inputs(
+    let loaded = load_resolved_inputs(
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
     )?;
+    let crate::context::LoadedInputs {
+        input_check,
+        warnings,
+        inputs,
+        ..
+    } = loaded;
     let mut files = Vec::new();
 
     for input in inputs {
@@ -83,7 +91,8 @@ pub fn run(args: &LengthArgs) -> Result<()> {
         modality: args.common.modality.clone(),
         command: "length".to_string(),
         n_reads: args.common.n_reads,
-        warnings: Vec::new(),
+        input_check,
+        warnings,
         files,
     };
 
@@ -96,13 +105,7 @@ pub fn run(args: &LengthArgs) -> Result<()> {
 }
 
 fn render_text(report: &ReportEnvelope<LengthResult>) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "seqcheck length\nspec: {}\nmodality: {}\nrequested_reads: {}\n",
-        report.spec.display(),
-        report.modality,
-        report.n_reads
-    ));
+    let mut out = render_report_prelude("length", report);
 
     for file in &report.files {
         let results = &file.results;

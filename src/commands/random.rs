@@ -1,6 +1,7 @@
 use crate::context::{filter_regions_by_sequence_type, load_resolved_inputs};
 use crate::report::{
-    format_fraction, top_sequences, write_report, FileReport, ReportEnvelope, SequenceCount,
+    format_fraction, render_report_prelude, top_sequences, write_report, FileReport,
+    ReportEnvelope, SequenceCount,
 };
 use crate::scan::{extract_region, scan_fastq};
 use crate::CommonMetricArgs;
@@ -49,11 +50,17 @@ struct RandomRegionState {
 }
 
 pub fn run(args: &RandomArgs) -> Result<()> {
-    let (_, inputs) = load_resolved_inputs(
+    let loaded = load_resolved_inputs(
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
     )?;
+    let crate::context::LoadedInputs {
+        input_check,
+        warnings,
+        inputs,
+        ..
+    } = loaded;
     let mut files = Vec::new();
 
     for input in inputs {
@@ -108,7 +115,8 @@ pub fn run(args: &RandomArgs) -> Result<()> {
         modality: args.common.modality.clone(),
         command: "random".to_string(),
         n_reads: args.common.n_reads,
-        warnings: Vec::new(),
+        input_check,
+        warnings,
         files,
     };
 
@@ -168,13 +176,7 @@ fn sequence_entropy_bits(sequences: &HashMap<String, usize>) -> f64 {
 }
 
 fn render_text(report: &ReportEnvelope<RandomResult>) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "seqcheck random\nspec: {}\nmodality: {}\nrequested_reads: {}\n",
-        report.spec.display(),
-        report.modality,
-        report.n_reads
-    ));
+    let mut out = render_report_prelude("random", report);
 
     for file in &report.files {
         out.push_str(&format!(

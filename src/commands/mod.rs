@@ -4,5 +4,6 @@ pub mod fixed;
 pub mod hist;
 pub mod length;
 pub mod onlist;
+pub mod primer;
 pub mod random;
 pub mod version;

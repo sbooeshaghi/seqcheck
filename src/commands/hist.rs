@@ -1,5 +1,7 @@
 use crate::context::{filter_regions_by_id, load_resolved_inputs};
-use crate::report::{top_sequences, write_report, FileReport, ReportEnvelope, SequenceCount};
+use crate::report::{
+    render_report_prelude, top_sequences, write_report, FileReport, ReportEnvelope, SequenceCount,
+};
 use crate::scan::{extract_region, scan_fastq};
 use crate::CommonMetricArgs;
 use anyhow::Result;
@@ -33,11 +35,17 @@ struct HistState {
 }
 
 pub fn run(args: &HistArgs) -> Result<()> {
-    let (_, inputs) = load_resolved_inputs(
+    let loaded = load_resolved_inputs(
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
     )?;
+    let crate::context::LoadedInputs {
+        input_check,
+        warnings,
+        inputs,
+        ..
+    } = loaded;
     let mut files = Vec::new();
 
     for input in inputs {
@@ -88,7 +96,8 @@ pub fn run(args: &HistArgs) -> Result<()> {
         modality: args.common.modality.clone(),
         command: "hist".to_string(),
         n_reads: args.common.n_reads,
-        warnings: Vec::new(),
+        input_check,
+        warnings,
         files,
     };
 
@@ -101,13 +110,7 @@ pub fn run(args: &HistArgs) -> Result<()> {
 }
 
 fn render_text(report: &ReportEnvelope<HistResult>) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "seqcheck hist\nspec: {}\nmodality: {}\nrequested_reads: {}\n",
-        report.spec.display(),
-        report.modality,
-        report.n_reads
-    ));
+    let mut out = render_report_prelude("hist", report);
 
     for file in &report.files {
         out.push_str(&format!(
