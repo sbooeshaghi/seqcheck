@@ -1,3 +1,4 @@
+use crate::auth::RemoteAccess;
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
 use seqspec::assay::Assay;
@@ -9,7 +10,6 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, BufReader, Read as IoRead};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ExpectedRegion {
@@ -26,8 +26,8 @@ pub struct ExpectedRegion {
 pub struct LoadedInputs {
     pub spec: Assay,
     pub input_check: InputCheck,
-    pub warnings: Vec<String>,
     pub inputs: Vec<ResolvedInput>,
+    pub remote_access: RemoteAccess,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -147,6 +147,7 @@ pub fn load_resolved_inputs(
     spec_path: &Path,
     modality: &str,
     fastqs: &[PathBuf],
+    auth_profile: Option<&str>,
 ) -> Result<LoadedInputs> {
     let spec = load_spec(spec_path)?;
     let spec_base = spec_path
@@ -154,6 +155,7 @@ pub fn load_resolved_inputs(
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     let expected_files = expected_files_for_modality(&spec, modality)?;
+    let remote_access = RemoteAccess::load(auth_profile)?;
 
     let inputs = fastqs
         .iter()
@@ -163,32 +165,12 @@ pub fn load_resolved_inputs(
     ensure_unique_matches(&inputs)?;
 
     let input_check = build_input_check(expected_files, fastqs, &inputs);
-    let mut warnings = Vec::new();
-
-    if !input_check.missing_expected_files.is_empty() {
-        warnings.push(format!(
-            "missing expected modality files were not supplied: {}",
-            input_check
-                .missing_expected_files
-                .iter()
-                .map(describe_expected_file)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
-    warnings.extend(
-        inputs
-            .iter()
-            .filter_map(build_primer_warning)
-            .collect::<Vec<_>>(),
-    );
 
     Ok(LoadedInputs {
         spec,
         input_check,
-        warnings,
         inputs,
+        remote_access,
     })
 }
 
@@ -227,7 +209,11 @@ pub fn filter_regions_by_sequence_type(
         .collect()
 }
 
-pub fn load_onlist(spec_base: &Path, region: &Region) -> Result<LoadedOnlist> {
+pub fn load_onlist(
+    spec_base: &Path,
+    region: &Region,
+    remote_access: &RemoteAccess,
+) -> Result<LoadedOnlist> {
     let onlist = region
         .onlist
         .as_ref()
@@ -240,7 +226,7 @@ pub fn load_onlist(spec_base: &Path, region: &Region) -> Result<LoadedOnlist> {
                 .map_err(|err| anyhow!("failed to read onlist '{}': {}", source, err))?;
             normalize_onlist_lines(lines)
         }
-        "http" | "https" | "ftp" => read_remote_onlist_entries(&source)
+        "http" | "https" | "ftp" => read_remote_onlist_entries(remote_access, &source)
             .with_context(|| format!("failed to stream remote onlist '{}'", source))?,
         other => bail!(
             "unsupported onlist urltype '{}' for region '{}'",
@@ -544,28 +530,6 @@ fn sequence_is_concrete_dna(sequence: &str) -> bool {
         .all(|base| matches!(base.to_ascii_uppercase(), 'A' | 'C' | 'G' | 'T'))
 }
 
-fn build_primer_warning(input: &ResolvedInput) -> Option<String> {
-    if input.primer_classification.kind != PrimerClassificationKind::NonScannablePrimer {
-        return None;
-    }
-
-    Some(format!(
-        "read '{}' primer_id '{}' points to a non-scannable primer region '{}': {}",
-        input.read.read_id,
-        input.read.primer_id,
-        input.primer_region.region_id,
-        input
-            .primer_classification
-            .reason
-            .clone()
-            .unwrap_or_else(|| "unknown reason".to_string())
-    ))
-}
-
-fn describe_expected_file(expected: &ExpectedFile) -> String {
-    format!("{} (read_id {})", expected.file_id, expected.read_id)
-}
-
 fn normalize_onlist_lines(lines: Vec<String>) -> HashSet<String> {
     normalize_onlist_reader(std::io::Cursor::new(lines.join("\n"))).unwrap_or_default()
 }
@@ -589,34 +553,14 @@ where
     Ok(entries)
 }
 
-fn read_remote_onlist_entries(url: &str) -> Result<HashSet<String>> {
-    let mut child = Command::new("curl")
-        .arg("-fsSL")
-        .arg(url)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| format!("failed to spawn curl for '{}'", url))?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow!("curl did not provide stdout for '{}'", url))?;
-
-    let entries = if url.ends_with(".gz") {
-        normalize_onlist_reader(GzDecoder::new(stdout))?
-    } else {
-        normalize_onlist_reader(stdout)?
-    };
-
-    let status = child
-        .wait()
-        .with_context(|| format!("failed to wait for curl while reading '{}'", url))?;
-    if !status.success() {
-        bail!("curl exited with status {} while reading '{}'", status, url);
-    }
-
-    Ok(entries)
+fn read_remote_onlist_entries(remote_access: &RemoteAccess, url: &str) -> Result<HashSet<String>> {
+    remote_access.with_reader(url, |reader| {
+        if url.ends_with(".gz") {
+            normalize_onlist_reader(GzDecoder::new(reader))
+        } else {
+            normalize_onlist_reader(reader)
+        }
+    })
 }
 
 #[cfg(test)]
@@ -791,7 +735,8 @@ mod tests {
 
         let library = sample_assay().get_libspec("rna").unwrap();
         let barcode = library.get_region_by_id("barcode").pop().unwrap();
-        let loaded = load_onlist(&root, &barcode).unwrap();
+        let access = RemoteAccess::load(None).unwrap();
+        let loaded = load_onlist(&root, &barcode, &access).unwrap();
 
         assert!(loaded.entries.contains("AAAA"));
         assert!(loaded.entries.contains("CCCC"));
@@ -829,16 +774,6 @@ mod tests {
 
     #[test]
     fn test_read_remote_onlist_entries_streams_gzip_over_http() {
-        if Command::new("curl")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_err()
-        {
-            return;
-        }
-
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(b"AAAA\t1\nCCCC\t2\n").unwrap();
         let body = encoder.finish().unwrap();
@@ -855,8 +790,10 @@ mod tests {
             stream.write_all(&body).unwrap();
         });
 
+        let access = RemoteAccess::load(None).unwrap();
         let observed =
-            read_remote_onlist_entries(&format!("http://{}/barcodes.txt.gz", addr)).unwrap();
+            read_remote_onlist_entries(&access, &format!("http://{}/barcodes.txt.gz", addr))
+                .unwrap();
 
         server.join().unwrap();
 

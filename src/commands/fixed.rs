@@ -1,7 +1,6 @@
 use crate::context::{filter_regions_by_sequence_type, load_resolved_inputs};
 use crate::report::{
-    format_fraction, render_report_prelude, top_sequences, write_report, FileReport,
-    ReportEnvelope, SequenceCount,
+    input_check_result, top_sequences, write_report, AssessmentType, Report, ResultBuilder,
 };
 use crate::scan::{extract_region, scan_fastq};
 use crate::sequence::{
@@ -9,7 +8,6 @@ use crate::sequence::{
 };
 use crate::CommonMetricArgs;
 use anyhow::Result;
-use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
 const TOP_SEQUENCE_LIMIT: usize = 10;
@@ -20,45 +18,12 @@ pub struct FixedArgs {
     pub common: CommonMetricArgs,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub struct OrientationCounts {
     pub forward: usize,
     pub reverse: usize,
     pub complement: usize,
     pub reverse_complement: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct OffsetCount {
-    pub offset: i64,
-    pub count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct FixedRegionResult {
-    pub region_id: String,
-    pub name: String,
-    pub region_type: String,
-    pub start: usize,
-    pub stop: usize,
-    pub expected_sequence: String,
-    pub sampled_count: usize,
-    pub covered_count: usize,
-    pub covered_fraction: f64,
-    pub short_read_count: usize,
-    pub exact_match_count: usize,
-    pub exact_match_fraction: f64,
-    pub orientation_counts: OrientationCounts,
-    pub offset_histogram: Vec<OffsetCount>,
-    pub absent_count: usize,
-    pub multi_hit_count: usize,
-    pub top_nonmatching_sequences: Vec<SequenceCount>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct FixedResult {
-    pub sampled_count: usize,
-    pub regions: Vec<FixedRegionResult>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,20 +43,24 @@ pub fn run(args: &FixedArgs) -> Result<()> {
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
+        args.common.auth_profile.as_deref(),
     )?;
     let crate::context::LoadedInputs {
         input_check,
-        warnings,
         inputs,
         ..
     } = loaded;
-    let mut files = Vec::new();
+    let mut report = Report::new(
+        "fixed",
+        args.common.spec.clone(),
+        &args.common.modality,
+        args.common.n_reads,
+    );
+    report
+        .results
+        .push(input_check_result(&input_check, &inputs));
 
     for input in inputs {
-        let input_path = input.input_path.clone();
-        let read_id = input.read.read_id.clone();
-        let file_id = input.file_id();
-        let matched_by = input.matched_by.clone();
         let primary_orientation = if input.read.strand == "neg" {
             ExpectedOrientation::ReverseComplement
         } else {
@@ -150,132 +119,189 @@ pub fn run(args: &FixedArgs) -> Result<()> {
             },
         )?;
 
-        let results = fixed_regions
-            .iter()
-            .enumerate()
-            .map(|(idx, region)| FixedRegionResult {
-                region_id: region.region.region_id.clone(),
-                name: region.region.name.clone(),
-                region_type: region.region.region_type.clone(),
-                start: usize::try_from(region.start).unwrap_or_default(),
-                stop: usize::try_from(region.stop).unwrap_or_default(),
-                expected_sequence: region.region.sequence.clone(),
+        for (idx, region) in fixed_regions.iter().enumerate() {
+            report.results.push(build_fixed_region_result(
+                &input.file_id(),
+                &input.read.read_id,
                 sampled_count,
-                covered_count: state[idx].covered_count,
-                covered_fraction: crate::report::fraction(state[idx].covered_count, sampled_count),
-                short_read_count: state[idx].short_read_count,
-                exact_match_count: state[idx].exact_match_count,
-                exact_match_fraction: crate::report::fraction(
-                    state[idx].exact_match_count,
-                    state[idx].covered_count,
-                ),
-                orientation_counts: state[idx].orientation_counts.clone(),
-                offset_histogram: state[idx]
-                    .offset_histogram
-                    .iter()
-                    .map(|(offset, count)| OffsetCount {
-                        offset: *offset,
-                        count: *count,
-                    })
-                    .collect(),
-                absent_count: state[idx].absent_count,
-                multi_hit_count: state[idx].multi_hit_count,
-                top_nonmatching_sequences: top_sequences(
-                    &state[idx].mismatches,
-                    TOP_SEQUENCE_LIMIT,
-                ),
-            })
-            .collect();
-
-        files.push(FileReport {
-            input_path,
-            read_id,
-            file_id,
-            matched_by,
-            results: FixedResult {
-                sampled_count,
-                regions: results,
-            },
-        });
-    }
-
-    let report = ReportEnvelope {
-        spec: args.common.spec.clone(),
-        modality: args.common.modality.clone(),
-        command: "fixed".to_string(),
-        n_reads: args.common.n_reads,
-        input_check,
-        warnings,
-        files,
-    };
-
-    write_report(
-        &args.common.output,
-        args.common.format,
-        &report,
-        render_text(&report),
-    )
-}
-
-fn render_text(report: &ReportEnvelope<FixedResult>) -> String {
-    let mut out = render_report_prelude("fixed", report);
-
-    for file in &report.files {
-        out.push_str(&format!(
-            "\nfile: {}\nread_id: {}\nfile_id: {}\nmatched_by: {}\nsampled_reads: {}\n",
-            file.input_path.display(),
-            file.read_id,
-            file.file_id,
-            file.matched_by,
-            file.results.sampled_count,
-        ));
-        for region in &file.results.regions {
-            out.push_str(&format!(
-                "region: {} [{}:{}] expected={}\n  covered: {} ({})\n  short_reads: {}\n  exact_matches: {} ({})\n",
-                region.region_id,
-                region.start,
-                region.stop,
-                region.expected_sequence,
-                region.covered_count,
-                format_fraction(region.covered_count, region.sampled_count),
-                region.short_read_count,
-                region.exact_match_count,
-                format_fraction(region.exact_match_count, region.covered_count),
+                region,
+                &expected_sequences[idx],
+                primary_orientation,
+                &state[idx],
             ));
-            out.push_str(&format!(
-                "  orientation_matches:\n    forward: {}\n    reverse: {}\n    complement: {}\n    reverse_complement: {}\n",
-                region.orientation_counts.forward,
-                region.orientation_counts.reverse,
-                region.orientation_counts.complement,
-                region.orientation_counts.reverse_complement,
-            ));
-            out.push_str("  offset_histogram:\n");
-            if region.offset_histogram.is_empty() {
-                out.push_str("    (none)\n");
-            } else {
-                for entry in &region.offset_histogram {
-                    out.push_str(&format!(
-                        "    {} {}\n",
-                        format_offset(entry.offset),
-                        entry.count
-                    ));
-                }
-            }
-            out.push_str(&format!(
-                "  absent_reads: {}\n  multi_hit_reads: {}\n",
-                region.absent_count,
-                region.multi_hit_count,
-            ));
-            if !region.top_nonmatching_sequences.is_empty() {
-                out.push_str("  top_nonmatching_sequences:\n");
-                for entry in &region.top_nonmatching_sequences {
-                    out.push_str(&format!("    {} {}\n", entry.sequence, entry.count));
-                }
-            }
         }
     }
 
-    out
+    write_report(&args.common.output, args.common.format, &report)
+}
+
+fn build_fixed_region_result(
+    file_id: &str,
+    read_id: &str,
+    sampled_count: usize,
+    region: &seqspec::region::RegionCoordinate,
+    _expected: &ExpectedSequences,
+    primary_orientation: ExpectedOrientation,
+    state: &FixedRegionState,
+) -> crate::report::AtomicResult {
+    let mut result = ResultBuilder::new(
+        "fixed",
+        vec![file_id.to_string()],
+        vec![read_id.to_string()],
+        vec![region.region.region_id.clone()],
+    );
+
+    let expected_sequence_id = result.expected_scalar(
+        "expected_sequence",
+        "Expected fixed sequence for this region from the seqspec.",
+        region.region.sequence.clone(),
+        Some("bases"),
+    );
+    let expected_coordinates_id = result.expected_records(
+        "expected_coordinates",
+        "Expected projected start and stop coordinates for this fixed region.",
+        vec![serde_json::json!({
+            "start": usize::try_from(region.start).unwrap_or_default(),
+            "stop": usize::try_from(region.stop).unwrap_or_default(),
+            "region_type": region.region.region_type,
+            "name": region.region.name
+        })],
+    );
+    let primary_orientation_label = primary_orientation.label();
+    let primary_orientation_id = result.expected_scalar(
+        "primary_orientation",
+        "Primary biological orientation used for exact matching on this read.",
+        primary_orientation_label,
+        None,
+    );
+    let sampled_id = result.observed_scalar(
+        "sampled_count",
+        "Number of reads sampled from the FASTQ file.",
+        sampled_count,
+        Some("count"),
+    );
+    let covered_id = result.observed_scalar(
+        "covered_count",
+        "Number of sampled reads that fully cover the expected region coordinates.",
+        state.covered_count,
+        Some("count"),
+    );
+    let covered_fraction_id = result.observed_scalar(
+        "covered_fraction",
+        "Fraction of sampled reads that fully cover the expected region coordinates.",
+        crate::report::fraction(state.covered_count, sampled_count),
+        Some("fraction"),
+    );
+    let short_id = result.observed_scalar(
+        "short_read_count",
+        "Number of sampled reads that do not extend far enough to cover the expected region coordinates.",
+        state.short_read_count,
+        Some("count"),
+    );
+    let exact_count_id = result.observed_scalar(
+        "exact_match_count",
+        "Number of covered reads whose extracted sequence exactly matches the expected motif in the primary orientation.",
+        state.exact_match_count,
+        Some("count"),
+    );
+    let exact_fraction_id = result.observed_scalar(
+        "exact_match_fraction",
+        "Fraction of covered reads whose extracted sequence exactly matches the expected motif in the primary orientation.",
+        crate::report::fraction(state.exact_match_count, state.covered_count),
+        Some("fraction"),
+    );
+    let orientation_id = result.observed_records(
+        "orientation_counts",
+        "Counts of exact motif matches under each orientation transform.",
+        vec![
+            serde_json::json!({ "orientation": "forward", "count": state.orientation_counts.forward }),
+            serde_json::json!({ "orientation": "reverse", "count": state.orientation_counts.reverse }),
+            serde_json::json!({ "orientation": "complement", "count": state.orientation_counts.complement }),
+            serde_json::json!({ "orientation": "reverse_complement", "count": state.orientation_counts.reverse_complement }),
+        ],
+    );
+    let offset_id = result.observed_series(
+        "offset_histogram",
+        "Distribution of exact-hit offsets relative to the expected region start.",
+        state
+            .offset_histogram
+            .iter()
+            .map(|(offset, count)| (format_offset(*offset), *count)),
+        Some("count"),
+    );
+    let absent_id = result.observed_scalar(
+        "absent_count",
+        "Number of sampled reads with no exact motif hit anywhere in the read.",
+        state.absent_count,
+        Some("count"),
+    );
+    let multi_hit_id = result.observed_scalar(
+        "multi_hit_count",
+        "Number of sampled reads with more than one exact motif hit in the read.",
+        state.multi_hit_count,
+        Some("count"),
+    );
+    let top_mismatches_id = result.observed_records(
+        "top_nonmatching_sequences",
+        "Most frequent nonmatching extracted sequences observed at the expected coordinates.",
+        top_sequences(&state.mismatches, TOP_SEQUENCE_LIMIT),
+    );
+
+    let (assessment_type, assessment_code, description) = if state.exact_match_count
+        == state.covered_count
+    {
+        (
+            AssessmentType::Pass,
+            "fixed_exact_match_complete",
+            format!(
+                "All covered reads exactly match fixed region '{}' in {} orientation.",
+                region.region.region_id, primary_orientation_label
+            ),
+        )
+    } else if state.exact_match_count > 0 {
+        (
+            AssessmentType::Interpretation,
+            "fixed_exact_match_partial",
+            format!(
+                "Fixed region '{}' matches exactly in some covered reads, with the dominant orientation '{}'.",
+                region.region.region_id, primary_orientation_label
+            ),
+        )
+    } else {
+        (
+            AssessmentType::Warning,
+            "fixed_exact_match_absent",
+            format!(
+                "Fixed region '{}' does not exactly match at the expected coordinates in the primary orientation.",
+                region.region.region_id
+            ),
+        )
+    };
+    result.assessment(
+        assessment_type,
+        assessment_code,
+        description,
+        vec![
+            expected_sequence_id,
+            expected_coordinates_id,
+            primary_orientation_id,
+        ],
+        vec![
+            sampled_id,
+            covered_id,
+            covered_fraction_id,
+            short_id,
+            exact_count_id,
+            exact_fraction_id,
+            orientation_id,
+            offset_id,
+            absent_id,
+            multi_hit_id,
+            top_mismatches_id,
+        ],
+    );
+
+    result.build()
 }
 
 #[derive(Debug, Clone)]
@@ -297,6 +323,13 @@ impl ExpectedOrientation {
         match self {
             ExpectedOrientation::Forward => &expected.forward,
             ExpectedOrientation::ReverseComplement => &expected.reverse_complement,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            ExpectedOrientation::Forward => "forward",
+            ExpectedOrientation::ReverseComplement => "reverse_complement",
         }
     }
 }

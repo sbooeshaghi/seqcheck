@@ -50,11 +50,67 @@ seqcheck <command> -s SPEC -m MODALITY [-n N] [--format text|json] FASTQ...
 - `-m, --modality`: modality to inspect
 - `-n, --n-reads`: number of reads to inspect per FASTQ. `0` means all reads
 - `--format text|json`: human-readable text or structured JSON output
+- `--auth-profile`: optional auth profile for remote resources declared in the seqspec
 - `FASTQ...`: one or more FASTQ files to inspect
 
 FASTQ paths are resolved against the spec in this order: `file_id`, `filename`, `url` basename, then `read_id`.
 
-Each successful metric report also includes an `input_check` block. It records the expected FASTQ inventory from the seqspec for that modality, the supplied inputs, the resolved matches, and any expected files that were not supplied. Missing expected files are warnings, not hard failures, so subset runs remain valid.
+Each successful metric report emits an atomic `input_check` result first. It records the expected FASTQ inventory from the seqspec for that modality, the supplied inputs, the resolved matches, and any expected files that were not supplied. Missing expected files are warnings, not hard failures, so subset runs remain valid.
+
+## Remote Auth
+
+Some seqspec files point at remote whitelist or reference resources that require HTTP auth. `seqcheck` now resolves remote auth by host and applies it through one shared fetch path.
+
+Auth profiles live in `auth.toml` and point to env vars, not raw secrets on the command line. `seqcheck` looks for the config in this order:
+
+1. `SEQCHECK_AUTH_CONFIG`
+2. `$XDG_CONFIG_HOME/seqcheck/auth.toml`
+3. `$HOME/.config/seqcheck/auth.toml`
+
+Example config:
+
+```toml
+[profiles.igvf]
+hosts = ["api.data.igvf.org", "data.igvf.org"]
+kind = "basic"
+username_env = "IGVF_ACCESS_KEY_ID"
+password_env = "IGVF_ACCESS_KEY_SECRET"
+```
+
+Or initialize the same profile directly:
+
+```bash
+seqcheck auth init \
+  --profile igvf \
+  --host api.data.igvf.org \
+  --host data.igvf.org \
+  --kind basic \
+  --username-env IGVF_ACCESS_KEY_ID \
+  --password-env IGVF_ACCESS_KEY_SECRET
+```
+
+Example usage:
+
+```bash
+export IGVF_ACCESS_KEY_ID=...
+export IGVF_ACCESS_KEY_SECRET=...
+
+seqcheck onlist \
+  --auth-profile igvf \
+  -s spec.yaml \
+  -m crispr \
+  sample_R1.fastq.gz
+```
+
+If `--auth-profile` is omitted, `seqcheck` matches profiles by URL host. If a named profile is supplied, the host must still match that profile.
+
+There is also a hidden inspector for local debugging:
+
+```bash
+seqcheck auth path
+seqcheck auth list
+seqcheck auth resolve https://api.data.igvf.org/reference-files/...
+```
 
 ## Check Catalog
 
@@ -125,35 +181,126 @@ seqcheck random \
 
 ## Output
 
-Each metric command emits the same JSON envelope:
+Each read-check command now emits the same top-level JSON object:
 
-- `spec`
-- `modality`
-- `command`
-- `n_reads`
-- `input_check`
-- `files`
-
-Each file entry contains:
-
-- `input_path`
-- `read_id`
-- `file_id`
-- `matched_by`
+- `report_schema_version`
+- `meta`
 - `results`
 
-The `results` payload depends on the command:
+`meta` contains:
 
-- `length`: expected and observed read length ranges
-- `coverage`: expected coordinates and coverage fractions
-- `coverage` also emits warnings when the same `region_id` or biological `region_type` appears in multiple reads in one invocation. This can reflect intended overlapping paired-end reads, or a seqspec/read-geometry mismatch when the observed reads extend farther than expected. This is the main guardrail for the failure mode shown in the CRISPR presentation under `docs/`.
-- `fixed`: per-region fixed-sequence match counts, strand-aware orientation counts, shifted-hit offset histograms, and top mismatches
-- `onlist`: per-region onlist match counts and top offlist sequences
-- `onlist` reads remote whitelist files directly from their URL. It does not require you to stage the file locally first.
-- `primer`: primer classification, exact primer-hit fractions, and dominant hit positions
-- `random`: per-region exact-sequence counts, Shannon entropy in bits over the observed sequence distribution, and entropy as a fraction of the theoretical `2 * region_length` DNA maximum
-- `cut`: extracted region sequences
-- `hist`: counts of extracted region sequences
+- `command`
+- `spec`
+- `modality`
+- `requested_reads`
+
+`results` is a flat list of atomic result objects. A single command can emit many results. Each result has:
+
+- `check`
+- `files`
+- `reads`
+- `regions`
+- `expected`
+- `observed`
+- `assessment`
+
+`files`, `reads`, and `regions` are seqspec ids only. They point back to entities already defined in the spec.
+
+`expected` and `observed` both use the same metric-item shape:
+
+- `id`
+- `name`
+- `description`
+- `data`
+
+`data` is shallow and typed:
+
+- `kind`: `scalar`, `series`, or `records`
+- `value`
+- `unit` when it matters
+
+`assessment` contains structured interpretation:
+
+- `type`: `pass`, `warning`, `error`, or `interpretation`
+- `code`
+- `description`
+- `expected_ids`
+- `observed_ids`
+
+This means the JSON is the source of truth. Stdout is rendered from the same atomic results, so a human and an AI agent see the same underlying report.
+
+For example, `coverage` emits:
+
+- one `input_check` result per invocation
+- one file-level `coverage` result per matched file/read
+- one region-level `coverage` result per matched file/read/region
+- cross-file `coverage` results when the same logical region or curated biological region type appears in multiple reads
+
+Abbreviated JSON example:
+
+```json
+{
+  "report_schema_version": "0.1.0",
+  "meta": {
+    "command": "coverage",
+    "spec": "../seqspec/tests/fixtures/spec.yaml",
+    "modality": "rna",
+    "requested_reads": 100
+  },
+  "results": [
+    {
+      "check": "input_check",
+      "files": ["rna_R1_SRR18677638.fastq.gz", "rna_R2_SRR18677638.fastq.gz"],
+      "reads": ["rna_R1", "rna_R2"],
+      "regions": [],
+      "expected": [...],
+      "observed": [...],
+      "assessment": [...]
+    },
+    {
+      "check": "coverage",
+      "files": ["rna_R1_SRR18677638.fastq.gz"],
+      "reads": ["rna_R1"],
+      "regions": ["rna_umi"],
+      "expected": [...],
+      "observed": [...],
+      "assessment": [...]
+    }
+  ]
+}
+```
+
+Abbreviated stdout for the same schema:
+
+```text
+seqcheck coverage
+spec: ../seqspec/tests/fixtures/spec.yaml
+modality: rna
+requested_reads: 100
+
+check: input_check
+files: rna_R1_SRR18677638.fastq.gz, rna_R2_SRR18677638.fastq.gz
+reads: rna_R1, rna_R2
+regions: (none)
+assessment:
+  - [pass] all_expected_files_matched: All expected modality files were supplied and matched uniquely.
+
+check: coverage
+files: rna_R1_SRR18677638.fastq.gz
+reads: rna_R1
+regions: rna_umi
+assessment:
+  - [pass] region_coverage_complete: All sampled reads cover region 'rna_umi'.
+expected:
+  - expected_region:
+    - name=UMI region_id=rna_umi region_type=umi sequence_type=random start=16 stop=28
+observed:
+  - sampled_count: 100 count
+  - covered_count: 100 count
+  - covered_fraction: 1 fraction
+```
+
+`onlist` reads remote whitelist files directly from their URL. It does not require you to stage the file locally first. If a whitelist cannot be loaded, `seqcheck onlist` now emits a structured error result instead of failing the whole report.
 
 ## Fixtures
 

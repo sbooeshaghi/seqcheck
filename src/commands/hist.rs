@@ -1,11 +1,10 @@
 use crate::context::{filter_regions_by_id, load_resolved_inputs};
 use crate::report::{
-    render_report_prelude, top_sequences, write_report, FileReport, ReportEnvelope, SequenceCount,
+    input_check_result, top_sequences, write_report, AssessmentType, Report, ResultBuilder,
 };
 use crate::scan::{extract_region, scan_fastq};
 use crate::CommonMetricArgs;
 use anyhow::Result;
-use serde::Serialize;
 use std::collections::HashMap;
 
 #[derive(Debug, clap::Args)]
@@ -15,16 +14,6 @@ pub struct HistArgs {
 
     #[arg(short = 'r', long, help = "Region ID to summarize", required = true)]
     pub region_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct HistResult {
-    pub region_id: String,
-    pub region_type: String,
-    pub sampled_count: usize,
-    pub covered_count: usize,
-    pub short_read_count: usize,
-    pub histogram: Vec<SequenceCount>,
 }
 
 #[derive(Debug, Default)]
@@ -39,20 +28,24 @@ pub fn run(args: &HistArgs) -> Result<()> {
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
+        args.common.auth_profile.as_deref(),
     )?;
     let crate::context::LoadedInputs {
         input_check,
-        warnings,
         inputs,
         ..
     } = loaded;
-    let mut files = Vec::new();
+    let mut report = Report::new(
+        "hist",
+        args.common.spec.clone(),
+        &args.common.modality,
+        args.common.n_reads,
+    );
+    report
+        .results
+        .push(input_check_result(&input_check, &inputs));
 
     for input in inputs {
-        let input_path = input.input_path.clone();
-        let read_id = input.read.read_id.clone();
-        let file_id = input.file_id();
-        let matched_by = input.matched_by.clone();
         let regions = filter_regions_by_id(&input, &args.region_id)?;
         let region = regions.first().unwrap().clone();
         let target = region.clone();
@@ -75,59 +68,58 @@ pub fn run(args: &HistArgs) -> Result<()> {
             },
         )?;
 
-        files.push(FileReport {
-            input_path,
-            read_id,
-            file_id,
-            matched_by,
-            results: HistResult {
-                region_id: region.region.region_id.clone(),
-                region_type: region.region.region_type.clone(),
-                sampled_count,
-                covered_count: state.covered_count,
-                short_read_count: state.short_read_count,
-                histogram: top_sequences(&state.counts, usize::MAX),
-            },
-        });
+        let mut result = ResultBuilder::new(
+            "hist",
+            vec![input.file_id()],
+            vec![input.read.read_id.clone()],
+            vec![region.region.region_id.clone()],
+        );
+        let expected_region_id = result.expected_records(
+            "expected_region",
+            "Expected projected coordinates and annotations for the summarized region.",
+            vec![serde_json::json!({
+                "start": usize::try_from(region.start).unwrap_or_default(),
+                "stop": usize::try_from(region.stop).unwrap_or_default(),
+                "region_type": region.region.region_type,
+                "name": region.region.name
+            })],
+        );
+        let sampled_id = result.observed_scalar(
+            "sampled_count",
+            "Number of reads sampled from the FASTQ file.",
+            sampled_count,
+            Some("count"),
+        );
+        let covered_id = result.observed_scalar(
+            "covered_count",
+            "Number of sampled reads that fully cover the summarized region.",
+            state.covered_count,
+            Some("count"),
+        );
+        let short_id = result.observed_scalar(
+            "short_read_count",
+            "Number of sampled reads that do not extend far enough to cover the summarized region.",
+            state.short_read_count,
+            Some("count"),
+        );
+        let histogram_id = result.observed_records(
+            "sequence_histogram",
+            "Exact histogram of extracted sequences for this region.",
+            top_sequences(&state.counts, usize::MAX),
+        );
+        result.assessment(
+            AssessmentType::Interpretation,
+            "region_histogram_computed",
+            format!(
+                "Computed the exact sequence histogram for region '{}'.",
+                region.region.region_id
+            ),
+            vec![expected_region_id],
+            vec![sampled_id, covered_id, short_id, histogram_id],
+        );
+
+        report.results.push(result.build());
     }
 
-    let report = ReportEnvelope {
-        spec: args.common.spec.clone(),
-        modality: args.common.modality.clone(),
-        command: "hist".to_string(),
-        n_reads: args.common.n_reads,
-        input_check,
-        warnings,
-        files,
-    };
-
-    write_report(
-        &args.common.output,
-        args.common.format,
-        &report,
-        render_text(&report),
-    )
-}
-
-fn render_text(report: &ReportEnvelope<HistResult>) -> String {
-    let mut out = render_report_prelude("hist", report);
-
-    for file in &report.files {
-        out.push_str(&format!(
-            "\nfile: {}\nread_id: {}\nfile_id: {}\nmatched_by: {}\nregion: {}\nsampled_reads: {}\ncovered_reads: {}\nshort_reads: {}\n",
-            file.input_path.display(),
-            file.read_id,
-            file.file_id,
-            file.matched_by,
-            file.results.region_id,
-            file.results.sampled_count,
-            file.results.covered_count,
-            file.results.short_read_count,
-        ));
-        for entry in &file.results.histogram {
-            out.push_str(&format!("  {} {}\n", entry.sequence, entry.count));
-        }
-    }
-
-    out
+    write_report(&args.common.output, args.common.format, &report)
 }

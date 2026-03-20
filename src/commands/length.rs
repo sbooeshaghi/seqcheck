@@ -1,27 +1,13 @@
 use crate::context::load_resolved_inputs;
-use crate::report::{
-    format_fraction, render_report_prelude, write_report, FileReport, ReportEnvelope,
-};
+use crate::report::{input_check_result, write_report, AssessmentType, Report, ResultBuilder};
 use crate::scan::scan_fastq;
 use crate::CommonMetricArgs;
 use anyhow::Result;
-use serde::Serialize;
 
 #[derive(Debug, clap::Args)]
 pub struct LengthArgs {
     #[command(flatten)]
     pub common: CommonMetricArgs,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct LengthResult {
-    pub sampled_count: usize,
-    pub expected_min_len: i64,
-    pub expected_max_len: i64,
-    pub observed_min_len: usize,
-    pub observed_max_len: usize,
-    pub out_of_range_count: usize,
-    pub out_of_range_fraction: f64,
 }
 
 #[derive(Debug, Default)]
@@ -36,20 +22,26 @@ pub fn run(args: &LengthArgs) -> Result<()> {
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
+        args.common.auth_profile.as_deref(),
     )?;
     let crate::context::LoadedInputs {
         input_check,
-        warnings,
         inputs,
         ..
     } = loaded;
-    let mut files = Vec::new();
+    let mut report = Report::new(
+        "length",
+        args.common.spec.clone(),
+        &args.common.modality,
+        args.common.n_reads,
+    );
+    report
+        .results
+        .push(input_check_result(&input_check, &inputs));
 
     for input in inputs {
-        let input_path = input.input_path.clone();
         let read_id = input.read.read_id.clone();
         let file_id = input.file_id();
-        let matched_by = input.matched_by.clone();
         let expected_min_len = input.read.min_len;
         let expected_max_len = input.read.max_len;
         let (state, sampled_count) = scan_fastq(
@@ -66,64 +58,87 @@ pub fn run(args: &LengthArgs) -> Result<()> {
             },
         )?;
 
-        files.push(FileReport {
-            input_path,
-            read_id,
-            file_id,
-            matched_by,
-            results: LengthResult {
-                sampled_count,
-                expected_min_len,
-                expected_max_len,
-                observed_min_len: state.min_len.unwrap_or_default(),
-                observed_max_len: state.max_len,
-                out_of_range_count: state.out_of_range_count,
-                out_of_range_fraction: crate::report::fraction(
-                    state.out_of_range_count,
-                    sampled_count,
-                ),
-            },
-        });
+        let observed_min_len = state.min_len.unwrap_or_default();
+        let observed_max_len = state.max_len;
+        let out_of_range_fraction =
+            crate::report::fraction(state.out_of_range_count, sampled_count);
+
+        let mut result = ResultBuilder::new("length", vec![file_id], vec![read_id], Vec::new());
+        let expected_min_id = result.expected_scalar(
+            "expected_min_len",
+            "Minimum read length allowed by the seqspec for this read.",
+            expected_min_len,
+            Some("bp"),
+        );
+        let expected_max_id = result.expected_scalar(
+            "expected_max_len",
+            "Maximum read length allowed by the seqspec for this read.",
+            expected_max_len,
+            Some("bp"),
+        );
+        let sampled_id = result.observed_scalar(
+            "sampled_count",
+            "Number of reads sampled from the FASTQ file.",
+            sampled_count,
+            Some("count"),
+        );
+        let observed_min_id = result.observed_scalar(
+            "observed_min_len",
+            "Shortest observed read length in the sampled reads.",
+            observed_min_len,
+            Some("bp"),
+        );
+        let observed_max_id = result.observed_scalar(
+            "observed_max_len",
+            "Longest observed read length in the sampled reads.",
+            observed_max_len,
+            Some("bp"),
+        );
+        let out_of_range_count_id = result.observed_scalar(
+            "out_of_range_count",
+            "Number of sampled reads whose length falls outside the seqspec range.",
+            state.out_of_range_count,
+            Some("count"),
+        );
+        let out_of_range_fraction_id = result.observed_scalar(
+            "out_of_range_fraction",
+            "Fraction of sampled reads whose length falls outside the seqspec range.",
+            out_of_range_fraction,
+            Some("fraction"),
+        );
+
+        if state.out_of_range_count == 0 {
+            result.assessment(
+                AssessmentType::Pass,
+                "length_in_range",
+                "All sampled reads fall within the seqspec length range.",
+                vec![expected_min_id, expected_max_id],
+                vec![
+                    sampled_id,
+                    observed_min_id,
+                    observed_max_id,
+                    out_of_range_count_id,
+                    out_of_range_fraction_id,
+                ],
+            );
+        } else {
+            result.assessment(
+                AssessmentType::Warning,
+                "length_out_of_range",
+                "Observed read lengths fall outside the seqspec range.",
+                vec![expected_min_id, expected_max_id],
+                vec![
+                    sampled_id,
+                    observed_min_id,
+                    observed_max_id,
+                    out_of_range_count_id,
+                    out_of_range_fraction_id,
+                ],
+            );
+        }
+
+        report.results.push(result.build());
     }
 
-    let report = ReportEnvelope {
-        spec: args.common.spec.clone(),
-        modality: args.common.modality.clone(),
-        command: "length".to_string(),
-        n_reads: args.common.n_reads,
-        input_check,
-        warnings,
-        files,
-    };
-
-    write_report(
-        &args.common.output,
-        args.common.format,
-        &report,
-        render_text(&report),
-    )
-}
-
-fn render_text(report: &ReportEnvelope<LengthResult>) -> String {
-    let mut out = render_report_prelude("length", report);
-
-    for file in &report.files {
-        let results = &file.results;
-        out.push_str(&format!(
-            "\nfile: {}\nread_id: {}\nfile_id: {}\nmatched_by: {}\nsampled_reads: {}\nexpected_length_range: {}-{}\nobserved_length_range: {}-{}\nout_of_range_reads: {} ({})\n",
-            file.input_path.display(),
-            file.read_id,
-            file.file_id,
-            file.matched_by,
-            results.sampled_count,
-            results.expected_min_len,
-            results.expected_max_len,
-            results.observed_min_len,
-            results.observed_max_len,
-            results.out_of_range_count,
-            format_fraction(results.out_of_range_count, results.sampled_count),
-        ));
-    }
-
-    out
+    write_report(&args.common.output, args.common.format, &report)
 }

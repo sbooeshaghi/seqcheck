@@ -40,9 +40,46 @@ fn run_failure(args: &[&str]) -> String {
     String::from_utf8(output.stderr).unwrap()
 }
 
+fn parse_json(args: &[&str]) -> Value {
+    serde_json::from_str(&run_success(args)).unwrap()
+}
+
+fn find_result<'a, F>(report: &'a Value, predicate: F) -> &'a Value
+where
+    F: Fn(&Value) -> bool,
+{
+    report["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|result| predicate(result))
+        .unwrap()
+}
+
+fn find_metric<'a>(result: &'a Value, section: &str, name: &str) -> &'a Value {
+    result[section]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == name)
+        .unwrap()
+}
+
+fn metric_value<'a>(result: &'a Value, section: &str, name: &str) -> &'a Value {
+    &find_metric(result, section, name)["data"]["value"]
+}
+
+fn has_assessment(result: &Value, code: &str) -> bool {
+    result["assessment"]
+        .as_array()
+        .unwrap_or(&Vec::new())
+        .iter()
+        .any(|assessment| assessment["code"] == code)
+}
+
 #[test]
-fn test_length_json_synthetic_golden() {
-    let observed = run_success(&[
+fn test_length_json_uses_atomic_schema() {
+    let parsed = parse_json(&[
         "length",
         "--format",
         "json",
@@ -55,54 +92,30 @@ fn test_length_json_synthetic_golden() {
         "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
     ]);
 
-    let expected = r#"{
-  "spec": "tests/fixtures/synthetic/spec.yaml",
-  "modality": "rna",
-  "command": "length",
-  "n_reads": 0,
-  "input_check": {
-    "expected_files": [
-      {
-        "read_id": "synthetic_R1",
-        "file_id": "synthetic_R1.fastq",
-        "filename": "synthetic_R1.fastq",
-        "url_basename": "synthetic_R1.fastq"
-      }
-    ],
-    "supplied_inputs": [
-      "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq"
-    ],
-    "matched_inputs": [
-      {
-        "input_path": "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
-        "read_id": "synthetic_R1",
-        "file_id": "synthetic_R1.fastq",
-        "matched_by": "file_id"
-      }
-    ],
-    "missing_expected_files": []
-  },
-  "files": [
-    {
-      "input_path": "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
-      "read_id": "synthetic_R1",
-      "file_id": "synthetic_R1.fastq",
-      "matched_by": "file_id",
-      "results": {
-        "sampled_count": 5,
-        "expected_min_len": 12,
-        "expected_max_len": 12,
-        "observed_min_len": 2,
-        "observed_max_len": 12,
-        "out_of_range_count": 1,
-        "out_of_range_fraction": 0.2
-      }
-    }
-  ]
-}
-"#;
+    assert_eq!(parsed["report_schema_version"], "0.1.0");
+    assert_eq!(parsed["meta"]["command"], "length");
+    assert_eq!(parsed["meta"]["modality"], "rna");
 
-    assert_eq!(observed, expected);
+    let input_check = find_result(&parsed, |result| result["check"] == "input_check");
+    assert_eq!(input_check["files"][0], "synthetic_R1.fastq");
+    assert!(has_assessment(input_check, "all_expected_files_matched"));
+
+    let length = find_result(&parsed, |result| {
+        result["check"] == "length"
+            && result["files"] == serde_json::json!(["synthetic_R1.fastq"])
+            && result["regions"].as_array().unwrap().is_empty()
+    });
+    assert_eq!(metric_value(length, "expected", "expected_min_len"), 12);
+    assert_eq!(metric_value(length, "expected", "expected_max_len"), 12);
+    assert_eq!(metric_value(length, "observed", "sampled_count"), 5);
+    assert_eq!(metric_value(length, "observed", "observed_min_len"), 2);
+    assert_eq!(metric_value(length, "observed", "observed_max_len"), 12);
+    assert_eq!(metric_value(length, "observed", "out_of_range_count"), 1);
+    assert_eq!(
+        metric_value(length, "observed", "out_of_range_fraction"),
+        0.2
+    );
+    assert!(has_assessment(length, "length_out_of_range"));
 }
 
 #[test]
@@ -122,47 +135,68 @@ fn test_fixed_text_synthetic_golden() {
 spec: tests/fixtures/synthetic/spec.yaml
 modality: rna
 requested_reads: 0
-input_check:
-  expected_files:
-    - synthetic_R1.fastq (read_id synthetic_R1, filename synthetic_R1.fastq, url_basename synthetic_R1.fastq)
-  supplied_inputs:
-    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
-  matched_inputs:
-    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq -> synthetic_R1.fastq (read_id synthetic_R1 via file_id)
-  missing_expected_files:
-    (none)
 
-file: tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
-read_id: synthetic_R1
-file_id: synthetic_R1.fastq
-matched_by: file_id
-sampled_reads: 5
-region: linker [4:6] expected=TT
-  covered: 4 (0.8000)
-  short_reads: 1
-  exact_matches: 3 (0.7500)
-  orientation_matches:
-    forward: 3
-    reverse: 3
-    complement: 0
-    reverse_complement: 0
-  offset_histogram:
-    -1 1
-    +0 3
-    +2 1
-  absent_reads: 1
-  multi_hit_reads: 1
-  top_nonmatching_sequences:
-    AC 1
+check: input_check
+files: synthetic_R1.fastq
+reads: synthetic_R1
+regions: (none)
+assessment:
+  - [pass] all_expected_files_matched: All expected modality files were supplied and matched uniquely.
+expected:
+  - expected_file_mappings:
+    - file_id=synthetic_R1.fastq filename=synthetic_R1.fastq read_id=synthetic_R1 url_basename=synthetic_R1.fastq
+observed:
+  - supplied_input_paths:
+    - input_path=tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
+  - matched_inputs:
+    - file_id=synthetic_R1.fastq input_path=tests/fixtures/synthetic/fastqs/synthetic_R1.fastq matched_by=file_id read_id=synthetic_R1
+  - missing_expected_file_ids:
+    (none)
+  - primer_classifications:
+    - classification=fixed_scannable file_id=synthetic_R1.fastq input_path=tests/fixtures/synthetic/fastqs/synthetic_R1.fastq primer_id=primer primer_region_id=primer read_id=synthetic_R1 reason=null scannable=true
+
+check: fixed
+files: synthetic_R1.fastq
+reads: synthetic_R1
+regions: linker
+assessment:
+  - [interpretation] fixed_exact_match_partial: Fixed region 'linker' matches exactly in some covered reads, with the dominant orientation 'forward'.
+expected:
+  - expected_sequence: TT bases
+  - expected_coordinates:
+    - name=Linker region_type=linker start=4 stop=6
+  - primary_orientation: forward
+observed:
+  - sampled_count: 5 count
+  - covered_count: 4 count
+  - covered_fraction: 0.8 fraction
+  - short_read_count: 1 count
+  - exact_match_count: 3 count
+  - exact_match_fraction: 0.75 fraction
+  - orientation_counts:
+    - count=3 orientation=forward
+    - count=3 orientation=reverse
+    - count=0 orientation=complement
+    - count=0 orientation=reverse_complement
+  - offset_histogram:
+    -1 1 count
+    +0 3 count
+    +2 1 count
+  - absent_count: 1 count
+  - multi_hit_count: 1 count
+  - top_nonmatching_sequences:
+    - count=1 sequence=AC
 "#;
 
     assert_eq!(observed, expected);
 }
 
 #[test]
-fn test_onlist_text_synthetic_golden() {
-    let observed = run_success(&[
+fn test_onlist_json_synthetic_reports_offlist_sequences() {
+    let parsed = parse_json(&[
         "onlist",
+        "--format",
+        "json",
         "-s",
         "tests/fixtures/synthetic/spec.yaml",
         "-m",
@@ -172,41 +206,26 @@ fn test_onlist_text_synthetic_golden() {
         "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
     ]);
 
-    let expected = r#"seqcheck onlist
-spec: tests/fixtures/synthetic/spec.yaml
-modality: rna
-requested_reads: 0
-input_check:
-  expected_files:
-    - synthetic_R1.fastq (read_id synthetic_R1, filename synthetic_R1.fastq, url_basename synthetic_R1.fastq)
-  supplied_inputs:
-    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
-  matched_inputs:
-    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq -> synthetic_R1.fastq (read_id synthetic_R1 via file_id)
-  missing_expected_files:
-    (none)
-
-file: tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
-read_id: synthetic_R1
-file_id: synthetic_R1.fastq
-matched_by: file_id
-sampled_reads: 5
-region: barcode [0:4] onlist=tests/fixtures/synthetic/onlists/synthetic_barcodes.txt entries=2
-  covered: 4 (0.8000)
-  short_reads: 1
-  onlist_matches: 3 (0.7500)
-  offlist_reads: 1
-  top_offlist_sequences:
-    GGGG 1
-"#;
-
-    assert_eq!(observed, expected);
+    let onlist = find_result(&parsed, |result| {
+        result["check"] == "onlist" && result["regions"] == serde_json::json!(["barcode"])
+    });
+    assert_eq!(
+        metric_value(onlist, "expected", "onlist_source"),
+        "tests/fixtures/synthetic/onlists/synthetic_barcodes.txt"
+    );
+    assert_eq!(metric_value(onlist, "observed", "covered_count"), 4);
+    assert_eq!(metric_value(onlist, "observed", "short_read_count"), 1);
+    assert_eq!(metric_value(onlist, "observed", "exact_onlist_count"), 3);
+    assert_eq!(metric_value(onlist, "observed", "offlist_count"), 1);
+    assert!(has_assessment(onlist, "offlist_sequences_detected"));
 }
 
 #[test]
-fn test_cut_and_hist_text_synthetic_golden() {
-    let cut = run_success(&[
+fn test_cut_and_hist_json_report_atomic_results() {
+    let cut = parse_json(&[
         "cut",
+        "--format",
+        "json",
         "-s",
         "tests/fixtures/synthetic/spec.yaml",
         "-m",
@@ -217,37 +236,20 @@ fn test_cut_and_hist_text_synthetic_golden() {
         "0",
         "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
     ]);
-    let expected_cut = r#"seqcheck cut
-spec: tests/fixtures/synthetic/spec.yaml
-modality: rna
-requested_reads: 0
-input_check:
-  expected_files:
-    - synthetic_R1.fastq (read_id synthetic_R1, filename synthetic_R1.fastq, url_basename synthetic_R1.fastq)
-  supplied_inputs:
-    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
-  matched_inputs:
-    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq -> synthetic_R1.fastq (read_id synthetic_R1 via file_id)
-  missing_expected_files:
-    (none)
+    let cut_result = find_result(&cut, |result| {
+        result["check"] == "cut" && result["regions"] == serde_json::json!(["barcode"])
+    });
+    assert_eq!(metric_value(cut_result, "observed", "covered_count"), 4);
+    assert_eq!(metric_value(cut_result, "observed", "short_read_count"), 1);
+    assert_eq!(
+        metric_value(cut_result, "observed", "extracted_sequences")[0]["sequence"],
+        "ACGT"
+    );
 
-file: tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
-read_id: synthetic_R1
-file_id: synthetic_R1.fastq
-matched_by: file_id
-region: barcode
-sampled_reads: 5
-covered_reads: 4
-short_reads: 1
-  1 ACGT
-  2 TGCA
-  3 ACGT
-  4 GGGG
-"#;
-    assert_eq!(cut, expected_cut);
-
-    let hist = run_success(&[
+    let hist = parse_json(&[
         "hist",
+        "--format",
+        "json",
         "-s",
         "tests/fixtures/synthetic/spec.yaml",
         "-m",
@@ -258,38 +260,23 @@ short_reads: 1
         "0",
         "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
     ]);
-    let expected_hist = r#"seqcheck hist
-spec: tests/fixtures/synthetic/spec.yaml
-modality: rna
-requested_reads: 0
-input_check:
-  expected_files:
-    - synthetic_R1.fastq (read_id synthetic_R1, filename synthetic_R1.fastq, url_basename synthetic_R1.fastq)
-  supplied_inputs:
-    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
-  matched_inputs:
-    - tests/fixtures/synthetic/fastqs/synthetic_R1.fastq -> synthetic_R1.fastq (read_id synthetic_R1 via file_id)
-  missing_expected_files:
-    (none)
-
-file: tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
-read_id: synthetic_R1
-file_id: synthetic_R1.fastq
-matched_by: file_id
-region: barcode
-sampled_reads: 5
-covered_reads: 4
-short_reads: 1
-  ACGT 2
-  GGGG 1
-  TGCA 1
-"#;
-    assert_eq!(hist, expected_hist);
+    let hist_result = find_result(&hist, |result| {
+        result["check"] == "hist" && result["regions"] == serde_json::json!(["barcode"])
+    });
+    assert_eq!(metric_value(hist_result, "observed", "covered_count"), 4);
+    assert_eq!(
+        metric_value(hist_result, "observed", "sequence_histogram")[0]["sequence"],
+        "ACGT"
+    );
+    assert_eq!(
+        metric_value(hist_result, "observed", "sequence_histogram")[0]["count"],
+        2
+    );
 }
 
 #[test]
 fn test_coverage_json_uses_current_seqspec_fixture() {
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "coverage",
         "--format",
         "json",
@@ -302,44 +289,41 @@ fn test_coverage_json_uses_current_seqspec_fixture() {
         "../seqspec/tests/fixtures/fastqs/rna_R1_SRR18677638.fastq.gz",
         "../seqspec/tests/fixtures/fastqs/rna_R2_SRR18677638.fastq.gz",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
 
-    assert_eq!(parsed["modality"], "rna");
-    assert_eq!(parsed["command"], "coverage");
+    assert_eq!(parsed["meta"]["modality"], "rna");
+    assert_eq!(parsed["meta"]["command"], "coverage");
+
+    let input_check = find_result(&parsed, |result| result["check"] == "input_check");
+    assert!(has_assessment(input_check, "all_expected_files_matched"));
+
+    let r1_file = find_result(&parsed, |result| {
+        result["check"] == "coverage"
+            && result["files"] == serde_json::json!(["rna_R1_SRR18677638.fastq.gz"])
+            && result["regions"].as_array().unwrap().is_empty()
+    });
     assert_eq!(
-        parsed["input_check"]["missing_expected_files"]
-            .as_array()
-            .unwrap()
-            .len(),
-        0
+        metric_value(r1_file, "observed", "full_read_coverage_count"),
+        100
     );
-    assert_eq!(parsed["files"].as_array().unwrap().len(), 2);
-    assert_eq!(parsed["files"][0]["read_id"], "rna_R1");
     assert_eq!(
-        parsed["files"][0]["results"]["expected_regions"]
+        metric_value(r1_file, "expected", "expected_regions")
             .as_array()
             .unwrap()
             .len(),
         2
     );
-    assert_eq!(
-        parsed["files"][0]["results"]["full_read_coverage_count"],
-        100
-    );
-    assert_eq!(parsed["files"][1]["read_id"], "rna_R2");
-    assert_eq!(
-        parsed["files"][1]["results"]["expected_regions"][0]["region_id"],
-        "cdna"
-    );
-    assert_eq!(
-        parsed["files"][1]["results"]["regions"][0]["covered_count"],
-        100
-    );
+
+    let cdna_region = find_result(&parsed, |result| {
+        result["check"] == "coverage"
+            && result["reads"] == serde_json::json!(["rna_R2"])
+            && result["regions"] == serde_json::json!(["cdna"])
+    });
+    assert_eq!(metric_value(cdna_region, "observed", "covered_count"), 100);
 }
 
 #[test]
-fn test_coverage_surfaces_duplicate_assignment_warnings() {
-    let observed = run_success(&[
+fn test_coverage_surfaces_duplicate_assignment_as_results() {
+    let parsed = parse_json(&[
         "coverage",
         "--format",
         "json",
@@ -352,39 +336,33 @@ fn test_coverage_surfaces_duplicate_assignment_warnings() {
         "tests/fixtures/bad_geometry/fastqs/bad_R1.fastq",
         "tests/fixtures/bad_geometry/fastqs/bad_R2.fastq",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
 
-    let warnings = parsed["warnings"].as_array().unwrap();
-    assert!(!warnings.is_empty());
-    assert!(warnings.iter().any(|warning| {
-        warning
-            .as_str()
-            .unwrap()
-            .contains("region_id 'barcode' appears in multiple reads/files")
-    }));
-    assert!(warnings.iter().any(|warning| {
-        warning
-            .as_str()
-            .unwrap()
-            .contains("intended overlapping paired-end reads")
-    }));
-    assert!(warnings.iter().any(|warning| {
-        warning
-            .as_str()
-            .unwrap()
-            .contains("region_type 'barcode' appears in multiple reads/files")
-    }));
-    assert!(warnings.iter().any(|warning| {
-        warning
-            .as_str()
-            .unwrap()
-            .contains("region_id 'umi' appears in multiple reads/files")
-    }));
+    let shared_barcode = find_result(&parsed, |result| {
+        result["check"] == "coverage"
+            && result["regions"] == serde_json::json!(["barcode"])
+            && has_assessment(result, "shared_region_id_visible_in_multiple_reads")
+    });
+    assert!(shared_barcode["assessment"][0]["description"]
+        .as_str()
+        .unwrap()
+        .contains("intended paired-end overlap"));
+
+    let shared_region_type = find_result(&parsed, |result| {
+        result["check"] == "coverage"
+            && result["regions"].as_array().unwrap().is_empty()
+            && has_assessment(result, "shared_region_type_visible_in_multiple_reads")
+            && metric_value(result, "expected", "projected_coordinates_by_read")[0]["region_type"]
+                == "barcode"
+    });
+    assert!(has_assessment(
+        shared_region_type,
+        "shared_region_type_visible_in_multiple_reads"
+    ));
 }
 
 #[test]
 fn test_subset_input_check_warns_and_succeeds() {
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "length",
         "--format",
         "json",
@@ -396,34 +374,27 @@ fn test_subset_input_check_warns_and_succeeds() {
         "10",
         "../seqspec/tests/fixtures/fastqs/rna_R1_SRR18677638.fastq.gz",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
 
+    let input_check = find_result(&parsed, |result| result["check"] == "input_check");
     assert_eq!(
-        parsed["input_check"]["matched_inputs"]
+        metric_value(input_check, "observed", "matched_inputs")
             .as_array()
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        parsed["input_check"]["missing_expected_files"]
+        metric_value(input_check, "observed", "missing_expected_file_ids")
             .as_array()
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        parsed["input_check"]["missing_expected_files"][0]["read_id"],
+        metric_value(input_check, "observed", "missing_expected_file_ids")[0]["read_id"],
         "rna_R2"
     );
-    assert!(parsed["warnings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|warning| warning
-            .as_str()
-            .unwrap()
-            .contains("missing expected modality files")));
+    assert!(has_assessment(input_check, "missing_expected_files"));
 }
 
 #[test]
@@ -457,7 +428,7 @@ fn test_unmatched_input_fails_before_scanning() {
 
 #[test]
 fn test_random_json_reports_sequence_entropy_against_max() {
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "random",
         "--format",
         "json",
@@ -469,43 +440,63 @@ fn test_random_json_reports_sequence_entropy_against_max() {
         "0",
         "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
 
-    let regions = parsed["files"][0]["results"]["regions"].as_array().unwrap();
-    let umi = regions
-        .iter()
-        .find(|region| region["region_id"] == "umi")
-        .unwrap();
-    let cdna = regions
-        .iter()
-        .find(|region| region["region_id"] == "cdna")
-        .unwrap();
+    let umi = find_result(&parsed, |result| {
+        result["check"] == "random" && result["regions"] == serde_json::json!(["umi"])
+    });
+    let cdna = find_result(&parsed, |result| {
+        result["check"] == "random" && result["regions"] == serde_json::json!(["cdna"])
+    });
 
-    assert_eq!(umi["covered_count"], 4);
-    assert_eq!(umi["short_read_count"], 1);
-    assert_eq!(umi["unique_sequence_count"], 3);
-    assert!((umi["sequence_entropy_bits"].as_f64().unwrap() - 1.5).abs() < 1e-9);
-    assert_eq!(umi["max_entropy_bits"].as_f64().unwrap(), 4.0);
-    assert!((umi["sequence_entropy_fraction"].as_f64().unwrap() - 0.375).abs() < 1e-9);
-    assert_eq!(umi["top_sequences"][0]["sequence"], "AA");
-    assert_eq!(umi["top_sequences"][0]["count"], 2);
-    assert_eq!(umi["top_sequences"][1]["sequence"], "GG");
-    assert_eq!(umi["top_sequences"][2]["sequence"], "TT");
-
-    assert_eq!(cdna["covered_count"], 4);
-    assert_eq!(cdna["unique_sequence_count"], 2);
-    assert_eq!(cdna["top_sequences"][0]["sequence"], "CCCC");
-    assert_eq!(cdna["top_sequences"][0]["count"], 3);
-    assert_eq!(cdna["top_sequences"][1]["sequence"], "GGGG");
-    assert!((cdna["sequence_entropy_bits"].as_f64().unwrap() - 0.8112781244591328).abs() < 1e-12);
+    assert_eq!(metric_value(umi, "observed", "covered_count"), 4);
+    assert_eq!(metric_value(umi, "observed", "short_read_count"), 1);
+    assert_eq!(metric_value(umi, "observed", "unique_sequence_count"), 3);
     assert!(
-        (cdna["sequence_entropy_fraction"].as_f64().unwrap() - 0.1014097655573916).abs() < 1e-12
+        (metric_value(umi, "observed", "sequence_entropy_bits")
+            .as_f64()
+            .unwrap()
+            - 1.5)
+            .abs()
+            < 1e-9
+    );
+    assert_eq!(
+        metric_value(umi, "expected", "max_entropy_bits")
+            .as_f64()
+            .unwrap(),
+        4.0
+    );
+    assert!(
+        (metric_value(umi, "observed", "sequence_entropy_fraction")
+            .as_f64()
+            .unwrap()
+            - 0.375)
+            .abs()
+            < 1e-9
+    );
+    assert_eq!(
+        metric_value(umi, "observed", "top_sequences")[0]["sequence"],
+        "AA"
+    );
+
+    assert_eq!(metric_value(cdna, "observed", "covered_count"), 4);
+    assert_eq!(metric_value(cdna, "observed", "unique_sequence_count"), 2);
+    assert_eq!(
+        metric_value(cdna, "observed", "top_sequences")[0]["sequence"],
+        "CCCC"
+    );
+    assert!(
+        (metric_value(cdna, "observed", "sequence_entropy_bits")
+            .as_f64()
+            .unwrap()
+            - 0.8112781244591328)
+            .abs()
+            < 1e-12
     );
 }
 
 #[test]
 fn test_fixed_json_matches_reverse_complement_on_negative_strand() {
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "fixed",
         "--format",
         "json",
@@ -517,34 +508,39 @@ fn test_fixed_json_matches_reverse_complement_on_negative_strand() {
         "0",
         "tests/fixtures/neg_fixed/fastqs/neg.fastq",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
-    let regions = parsed["files"][0]["results"]["regions"].as_array().unwrap();
-    let target = regions
-        .iter()
-        .find(|region| region["region_id"] == "target")
-        .unwrap();
+    let target = find_result(&parsed, |result| {
+        result["check"] == "fixed" && result["regions"] == serde_json::json!(["target"])
+    });
 
-    assert_eq!(target["exact_match_count"], 3);
+    assert_eq!(metric_value(target, "observed", "exact_match_count"), 3);
     assert_eq!(
-        target["top_nonmatching_sequences"]
+        metric_value(target, "observed", "top_nonmatching_sequences")
             .as_array()
             .unwrap()
             .len(),
         0
     );
-    assert_eq!(target["orientation_counts"]["forward"], 0);
-    assert_eq!(target["orientation_counts"]["reverse_complement"], 3);
-    let offset_histogram = target["offset_histogram"].as_array().unwrap();
+    assert_eq!(
+        metric_value(target, "observed", "orientation_counts")[0]["count"],
+        0
+    );
+    assert_eq!(
+        metric_value(target, "observed", "orientation_counts")[3]["count"],
+        3
+    );
+    let offset_histogram = metric_value(target, "observed", "offset_histogram")
+        .as_array()
+        .unwrap();
     assert_eq!(offset_histogram.len(), 1);
-    assert_eq!(offset_histogram[0]["offset"], 0);
-    assert_eq!(offset_histogram[0]["count"], 3);
-    assert_eq!(target["absent_count"], 0);
-    assert_eq!(target["multi_hit_count"], 0);
+    assert_eq!(offset_histogram[0]["key"], "+0");
+    assert_eq!(offset_histogram[0]["value"], 3);
+    assert_eq!(metric_value(target, "observed", "absent_count"), 0);
+    assert_eq!(metric_value(target, "observed", "multi_hit_count"), 0);
 }
 
 #[test]
 fn test_primer_json_reports_hits_and_classification() {
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "primer",
         "--format",
         "json",
@@ -556,20 +552,49 @@ fn test_primer_json_reports_hits_and_classification() {
         "0",
         "tests/fixtures/primer_cases/fastqs/fixed.fastq",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
-    let results = &parsed["files"][0]["results"];
+    let result = find_result(&parsed, |result| {
+        result["check"] == "primer" && result["files"] == serde_json::json!(["fixed.fastq"])
+    });
 
-    assert_eq!(results["primer_classification"]["kind"], "fixed_scannable");
-    assert_eq!(results["primer_classification"]["scannable"], true);
-    assert_eq!(results["forward_start_hit_count"], 1);
-    assert_eq!(results["forward_internal_hit_count"], 1);
-    assert_eq!(results["reverse_complement_start_hit_count"], 1);
-    assert_eq!(results["reverse_complement_internal_hit_count"], 1);
-    assert_eq!(results["absent_count"], 1);
-    assert_eq!(results["forward_hit_positions"][0]["position"], 0);
-    assert_eq!(results["forward_hit_positions"][1]["position"], 2);
     assert_eq!(
-        parsed["input_check"]["missing_expected_files"]
+        metric_value(result, "observed", "primer_classification_kind"),
+        "fixed_scannable"
+    );
+    assert_eq!(metric_value(result, "observed", "primer_scannable"), true);
+    assert_eq!(
+        metric_value(result, "observed", "forward_start_hit_count"),
+        1
+    );
+    assert_eq!(
+        metric_value(result, "observed", "forward_start_hit_fraction"),
+        0.2
+    );
+    assert_eq!(
+        metric_value(result, "observed", "forward_internal_hit_count"),
+        1
+    );
+    assert_eq!(
+        metric_value(result, "observed", "reverse_complement_start_hit_count"),
+        1
+    );
+    assert_eq!(
+        metric_value(result, "observed", "reverse_complement_internal_hit_count"),
+        1
+    );
+    assert_eq!(metric_value(result, "observed", "absent_count"), 1);
+    assert_eq!(metric_value(result, "observed", "absent_fraction"), 0.2);
+    assert_eq!(
+        metric_value(result, "observed", "forward_hit_positions")[0]["position"],
+        0
+    );
+    assert_eq!(
+        metric_value(result, "observed", "forward_hit_positions")[1]["position"],
+        2
+    );
+
+    let input_check = find_result(&parsed, |result| result["check"] == "input_check");
+    assert_eq!(
+        metric_value(input_check, "observed", "missing_expected_file_ids")
             .as_array()
             .unwrap()
             .len(),
@@ -579,7 +604,7 @@ fn test_primer_json_reports_hits_and_classification() {
 
 #[test]
 fn test_primer_json_reports_ghost_primer() {
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "primer",
         "--format",
         "json",
@@ -591,17 +616,22 @@ fn test_primer_json_reports_ghost_primer() {
         "0",
         "tests/fixtures/primer_cases/fastqs/ghost.fastq",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
-    let results = &parsed["files"][0]["results"];
+    let result = find_result(&parsed, |result| {
+        result["check"] == "primer" && result["files"] == serde_json::json!(["ghost.fastq"])
+    });
 
-    assert_eq!(results["primer_classification"]["kind"], "ghost_primer");
-    assert_eq!(results["primer_classification"]["scannable"], false);
-    assert_eq!(results["sampled_count"], 3);
+    assert_eq!(
+        metric_value(result, "observed", "primer_classification_kind"),
+        "ghost_primer"
+    );
+    assert_eq!(metric_value(result, "observed", "primer_scannable"), false);
+    assert_eq!(metric_value(result, "observed", "sampled_count"), 3);
+    assert!(has_assessment(result, "ghost_primer_anchor"));
 }
 
 #[test]
 fn test_primer_json_reports_non_scannable_primer() {
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "primer",
         "--format",
         "json",
@@ -613,27 +643,24 @@ fn test_primer_json_reports_non_scannable_primer() {
         "0",
         "tests/fixtures/primer_cases/fastqs/bad.fastq",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
-    let results = &parsed["files"][0]["results"];
+    let result = find_result(&parsed, |result| {
+        result["check"] == "primer" && result["files"] == serde_json::json!(["bad.fastq"])
+    });
 
     assert_eq!(
-        results["primer_classification"]["kind"],
+        metric_value(result, "observed", "primer_classification_kind"),
         "non_scannable_primer"
     );
-    assert_eq!(results["primer_classification"]["scannable"], false);
-    assert!(parsed["warnings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|warning| warning
-            .as_str()
-            .unwrap()
-            .contains("non-scannable primer region 'bad_primer'")));
+    assert_eq!(metric_value(result, "observed", "primer_scannable"), false);
+    assert!(has_assessment(result, "non_scannable_primer"));
+
+    let input_check = find_result(&parsed, |result| result["check"] == "input_check");
+    assert!(has_assessment(input_check, "non_scannable_primer"));
 }
 
 #[test]
 fn test_non_rna_length_json_uses_seqspec_fixture() {
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "length",
         "--format",
         "json",
@@ -645,12 +672,15 @@ fn test_non_rna_length_json_uses_seqspec_fixture() {
         "100",
         "../seqspec/tests/fixtures/fastqs/protein_R2_SRR18677644.fastq.gz",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
 
-    assert_eq!(parsed["files"][0]["read_id"], "protein_R2");
-    assert_eq!(parsed["files"][0]["results"]["expected_min_len"], 15);
-    assert_eq!(parsed["files"][0]["results"]["observed_max_len"], 15);
-    assert_eq!(parsed["files"][0]["results"]["out_of_range_count"], 0);
+    let result = find_result(&parsed, |result| {
+        result["check"] == "length"
+            && result["files"] == serde_json::json!(["protein_R2_SRR18677644.fastq.gz"])
+    });
+    assert_eq!(result["reads"][0], "protein_R2");
+    assert_eq!(metric_value(result, "expected", "expected_min_len"), 15);
+    assert_eq!(metric_value(result, "observed", "observed_max_len"), 15);
+    assert_eq!(metric_value(result, "observed", "out_of_range_count"), 0);
 }
 
 #[test]
@@ -659,7 +689,7 @@ fn test_onlist_json_uses_upgraded_10x_index_fixture() {
         .join("examples/10xv3/spec.yaml")
         .exists());
 
-    let observed = run_success(&[
+    let parsed = parse_json(&[
         "onlist",
         "--format",
         "json",
@@ -671,21 +701,41 @@ fn test_onlist_json_uses_upgraded_10x_index_fixture() {
         "100",
         "examples/10xv3/fastqs/I1.fastq.gz",
     ]);
-    let parsed: Value = serde_json::from_str(&observed).unwrap();
 
-    assert_eq!(parsed["files"][0]["read_id"], "I1.fastq.gz");
+    let result = find_result(&parsed, |result| {
+        result["check"] == "onlist" && result["regions"] == serde_json::json!(["index7"])
+    });
+    assert_eq!(result["reads"][0], "I1.fastq.gz");
     assert_eq!(
-        parsed["files"][0]["results"]["regions"][0]["region_id"],
-        "index7"
-    );
-    assert_eq!(
-        parsed["files"][0]["results"]["regions"][0]["onlist_source"],
+        metric_value(result, "expected", "onlist_source"),
         "examples/10xv3/index7_onlist.txt"
     );
+    assert_eq!(metric_value(result, "observed", "covered_count"), 100);
+}
+
+#[test]
+fn test_onlist_missing_resource_is_structured_error() {
+    let parsed = parse_json(&[
+        "onlist",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/broken_onlist/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+    ]);
+
+    let result = find_result(&parsed, |result| {
+        result["check"] == "onlist" && result["regions"] == serde_json::json!(["barcode"])
+    });
     assert_eq!(
-        parsed["files"][0]["results"]["regions"][0]["covered_count"],
-        100
+        metric_value(result, "observed", "fetch_load_status"),
+        "error"
     );
+    assert!(has_assessment(result, "missing_onlist_resource"));
 }
 
 #[test]

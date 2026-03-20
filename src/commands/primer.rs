@@ -1,13 +1,10 @@
 use crate::context::{load_resolved_inputs, PrimerClassification, PrimerClassificationKind};
-use crate::report::{
-    format_fraction, render_report_prelude, write_report, FileReport, ReportEnvelope,
-};
+use crate::report::{input_check_result, write_report, AssessmentType, Report, ResultBuilder};
 use crate::scan::scan_fastq;
 use crate::sequence::find_all_exact_hits;
 use crate::sequence::reverse_complement_sequence;
 use crate::CommonMetricArgs;
 use anyhow::Result;
-use serde::Serialize;
 use std::collections::HashMap;
 
 const TOP_POSITION_LIMIT: usize = 10;
@@ -18,33 +15,10 @@ pub struct PrimerArgs {
     pub common: CommonMetricArgs,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PositionCount {
     pub position: usize,
     pub count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PrimerResult {
-    pub primer_id: String,
-    pub primer_region_type: String,
-    pub primer_sequence_type: String,
-    pub primer_sequence: String,
-    pub primer_length: usize,
-    pub primer_classification: PrimerClassification,
-    pub sampled_count: usize,
-    pub forward_start_hit_count: usize,
-    pub forward_start_hit_fraction: f64,
-    pub forward_internal_hit_count: usize,
-    pub forward_internal_hit_fraction: f64,
-    pub reverse_complement_start_hit_count: usize,
-    pub reverse_complement_start_hit_fraction: f64,
-    pub reverse_complement_internal_hit_count: usize,
-    pub reverse_complement_internal_hit_fraction: f64,
-    pub absent_count: usize,
-    pub absent_fraction: f64,
-    pub forward_hit_positions: Vec<PositionCount>,
-    pub reverse_complement_hit_positions: Vec<PositionCount>,
 }
 
 #[derive(Debug, Default)]
@@ -63,20 +37,24 @@ pub fn run(args: &PrimerArgs) -> Result<()> {
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
+        args.common.auth_profile.as_deref(),
     )?;
     let crate::context::LoadedInputs {
         input_check,
-        warnings,
         inputs,
         ..
     } = loaded;
-    let mut files = Vec::new();
+    let mut report = Report::new(
+        "primer",
+        args.common.spec.clone(),
+        &args.common.modality,
+        args.common.n_reads,
+    );
+    report
+        .results
+        .push(input_check_result(&input_check, &inputs));
 
     for input in inputs {
-        let input_path = input.input_path.clone();
-        let read_id = input.read.read_id.clone();
-        let file_id = input.file_id();
-        let matched_by = input.matched_by.clone();
         let primer_region = input.primer_region.clone();
         let primer_classification = input.primer_classification.clone();
         let primer_sequence = primer_region.sequence.clone();
@@ -128,142 +106,222 @@ pub fn run(args: &PrimerArgs) -> Result<()> {
             },
         )?;
 
-        files.push(FileReport {
-            input_path,
-            read_id,
-            file_id,
-            matched_by,
-            results: PrimerResult {
-                primer_id: primer_region.region_id.clone(),
-                primer_region_type: primer_region.region_type.clone(),
-                primer_sequence_type: primer_region.sequence_type.clone(),
-                primer_sequence,
-                primer_length: usize::try_from(primer_region.max_len.max(0)).unwrap_or_default(),
-                primer_classification,
-                sampled_count,
-                forward_start_hit_count: state.forward_start_hit_count,
-                forward_start_hit_fraction: crate::report::fraction(
-                    state.forward_start_hit_count,
-                    sampled_count,
-                ),
-                forward_internal_hit_count: state.forward_internal_hit_count,
-                forward_internal_hit_fraction: crate::report::fraction(
-                    state.forward_internal_hit_count,
-                    sampled_count,
-                ),
-                reverse_complement_start_hit_count: state.reverse_complement_start_hit_count,
-                reverse_complement_start_hit_fraction: crate::report::fraction(
-                    state.reverse_complement_start_hit_count,
-                    sampled_count,
-                ),
-                reverse_complement_internal_hit_count: state.reverse_complement_internal_hit_count,
-                reverse_complement_internal_hit_fraction: crate::report::fraction(
-                    state.reverse_complement_internal_hit_count,
-                    sampled_count,
-                ),
-                absent_count: state.absent_count,
-                absent_fraction: crate::report::fraction(state.absent_count, sampled_count),
-                forward_hit_positions: top_positions(&state.forward_positions, TOP_POSITION_LIMIT),
-                reverse_complement_hit_positions: top_positions(
-                    &state.reverse_complement_positions,
-                    TOP_POSITION_LIMIT,
-                ),
-            },
-        });
-    }
-
-    let report = ReportEnvelope {
-        spec: args.common.spec.clone(),
-        modality: args.common.modality.clone(),
-        command: "primer".to_string(),
-        n_reads: args.common.n_reads,
-        input_check,
-        warnings,
-        files,
-    };
-
-    write_report(
-        &args.common.output,
-        args.common.format,
-        &report,
-        render_text(&report),
-    )
-}
-
-fn render_text(report: &ReportEnvelope<PrimerResult>) -> String {
-    let mut out = render_report_prelude("primer", report);
-
-    for file in &report.files {
-        out.push_str(&format!(
-            "\nfile: {}\nread_id: {}\nfile_id: {}\nmatched_by: {}\nsampled_reads: {}\nprimer_id: {}\nprimer_region_type: {}\nprimer_sequence_type: {}\nprimer_length: {}\nprimer_classification: {:?}\nscannable: {}\n",
-            file.input_path.display(),
-            file.read_id,
-            file.file_id,
-            file.matched_by,
-            file.results.sampled_count,
-            file.results.primer_id,
-            file.results.primer_region_type,
-            file.results.primer_sequence_type,
-            file.results.primer_length,
-            primer_kind_label(&file.results.primer_classification.kind),
-            file.results.primer_classification.scannable,
+        report.results.push(build_primer_result(
+            &input.file_id(),
+            &input.read.read_id,
+            &primer_region.region_id,
+            &primer_region.region_type,
+            &primer_region.sequence_type,
+            &primer_sequence,
+            &primer_classification,
+            sampled_count,
+            &state,
         ));
-
-        if let Some(reason) = &file.results.primer_classification.reason {
-            out.push_str(&format!("primer_reason: {}\n", reason));
-        }
-        if file.results.primer_classification.scannable {
-            out.push_str(&format!(
-                "primer_sequence: {}\nforward_start_hits: {} ({})\nforward_internal_hits: {} ({})\nreverse_complement_start_hits: {} ({})\nreverse_complement_internal_hits: {} ({})\nprimer_absent_reads: {} ({})\n",
-                file.results.primer_sequence,
-                file.results.forward_start_hit_count,
-                format_fraction(
-                    file.results.forward_start_hit_count,
-                    file.results.sampled_count,
-                ),
-                file.results.forward_internal_hit_count,
-                format_fraction(
-                    file.results.forward_internal_hit_count,
-                    file.results.sampled_count,
-                ),
-                file.results.reverse_complement_start_hit_count,
-                format_fraction(
-                    file.results.reverse_complement_start_hit_count,
-                    file.results.sampled_count,
-                ),
-                file.results.reverse_complement_internal_hit_count,
-                format_fraction(
-                    file.results.reverse_complement_internal_hit_count,
-                    file.results.sampled_count,
-                ),
-                file.results.absent_count,
-                format_fraction(file.results.absent_count, file.results.sampled_count),
-            ));
-            render_positions(
-                &mut out,
-                "forward_hit_positions",
-                &file.results.forward_hit_positions,
-            );
-            render_positions(
-                &mut out,
-                "reverse_complement_hit_positions",
-                &file.results.reverse_complement_hit_positions,
-            );
-        }
     }
 
-    out
+    write_report(&args.common.output, args.common.format, &report)
 }
 
-fn render_positions(out: &mut String, label: &str, positions: &[PositionCount]) {
-    out.push_str(&format!("{}:\n", label));
-    if positions.is_empty() {
-        out.push_str("  (none)\n");
-    } else {
-        for position in positions {
-            out.push_str(&format!("  {} {}\n", position.position, position.count));
+#[allow(clippy::too_many_arguments)]
+fn build_primer_result(
+    file_id: &str,
+    read_id: &str,
+    primer_id: &str,
+    primer_region_type: &str,
+    primer_sequence_type: &str,
+    primer_sequence: &str,
+    primer_classification: &PrimerClassification,
+    sampled_count: usize,
+    state: &PrimerState,
+) -> crate::report::AtomicResult {
+    let mut result = ResultBuilder::new(
+        "primer",
+        vec![file_id.to_string()],
+        vec![read_id.to_string()],
+        vec![primer_id.to_string()],
+    );
+
+    let region_type_id = result.expected_scalar(
+        "primer_region_type",
+        "Region type of the seqspec region referenced by primer_id.",
+        primer_region_type,
+        None,
+    );
+    let sequence_type_id = result.expected_scalar(
+        "primer_sequence_type",
+        "Sequence type of the seqspec region referenced by primer_id.",
+        primer_sequence_type,
+        None,
+    );
+    let sequence_id = result.expected_scalar(
+        "primer_sequence",
+        "Sequence stored on the seqspec region referenced by primer_id.",
+        primer_sequence,
+        Some("bases"),
+    );
+    let length_id = result.expected_scalar(
+        "primer_length",
+        "Length of the sequence stored on the seqspec region referenced by primer_id.",
+        primer_sequence.len(),
+        Some("bp"),
+    );
+    let sampled_id = result.observed_scalar(
+        "sampled_count",
+        "Number of reads sampled from the FASTQ file.",
+        sampled_count,
+        Some("count"),
+    );
+    let classification_id = result.observed_scalar(
+        "primer_classification_kind",
+        "Primer classification derived from the referenced seqspec region.",
+        primer_kind_label(&primer_classification.kind),
+        None,
+    );
+    let scannable_id = result.observed_scalar(
+        "primer_scannable",
+        "Whether the primer can be scanned as a concrete fixed motif.",
+        primer_classification.scannable,
+        None,
+    );
+    let reason_id = result.observed_scalar(
+        "primer_reason",
+        "Reason for the computed primer classification when one is available.",
+        primer_classification.reason.clone(),
+        None,
+    );
+
+    let mut observed_ids = vec![sampled_id, classification_id, scannable_id, reason_id];
+
+    if primer_classification.scannable {
+        let forward_start_id = result.observed_scalar(
+            "forward_start_hit_count",
+            "Number of sampled reads with at least one exact forward hit at position 0.",
+            state.forward_start_hit_count,
+            Some("count"),
+        );
+        let forward_start_fraction_id = result.observed_scalar(
+            "forward_start_hit_fraction",
+            "Fraction of sampled reads with at least one exact forward hit at position 0.",
+            crate::report::fraction(state.forward_start_hit_count, sampled_count),
+            Some("fraction"),
+        );
+        let forward_internal_id = result.observed_scalar(
+            "forward_internal_hit_count",
+            "Number of sampled reads with at least one exact forward hit after position 0.",
+            state.forward_internal_hit_count,
+            Some("count"),
+        );
+        let forward_internal_fraction_id = result.observed_scalar(
+            "forward_internal_hit_fraction",
+            "Fraction of sampled reads with at least one exact forward hit after position 0.",
+            crate::report::fraction(state.forward_internal_hit_count, sampled_count),
+            Some("fraction"),
+        );
+        let reverse_start_id = result.observed_scalar(
+            "reverse_complement_start_hit_count",
+            "Number of sampled reads with at least one exact reverse-complement hit at position 0.",
+            state.reverse_complement_start_hit_count,
+            Some("count"),
+        );
+        let reverse_start_fraction_id = result.observed_scalar(
+            "reverse_complement_start_hit_fraction",
+            "Fraction of sampled reads with at least one exact reverse-complement hit at position 0.",
+            crate::report::fraction(state.reverse_complement_start_hit_count, sampled_count),
+            Some("fraction"),
+        );
+        let reverse_internal_id = result.observed_scalar(
+            "reverse_complement_internal_hit_count",
+            "Number of sampled reads with at least one exact reverse-complement hit after position 0.",
+            state.reverse_complement_internal_hit_count,
+            Some("count"),
+        );
+        let reverse_internal_fraction_id = result.observed_scalar(
+            "reverse_complement_internal_hit_fraction",
+            "Fraction of sampled reads with at least one exact reverse-complement hit after position 0.",
+            crate::report::fraction(state.reverse_complement_internal_hit_count, sampled_count),
+            Some("fraction"),
+        );
+        let absent_id = result.observed_scalar(
+            "absent_count",
+            "Number of sampled reads with no exact forward or reverse-complement primer hit.",
+            state.absent_count,
+            Some("count"),
+        );
+        let absent_fraction_id = result.observed_scalar(
+            "absent_fraction",
+            "Fraction of sampled reads with no exact forward or reverse-complement primer hit.",
+            crate::report::fraction(state.absent_count, sampled_count),
+            Some("fraction"),
+        );
+        let forward_positions_id = result.observed_records(
+            "forward_hit_positions",
+            "Most frequent forward primer hit positions.",
+            top_positions(&state.forward_positions, TOP_POSITION_LIMIT),
+        );
+        let reverse_positions_id = result.observed_records(
+            "reverse_complement_hit_positions",
+            "Most frequent reverse-complement primer hit positions.",
+            top_positions(&state.reverse_complement_positions, TOP_POSITION_LIMIT),
+        );
+        observed_ids.extend([
+            forward_start_id,
+            forward_start_fraction_id,
+            forward_internal_id,
+            forward_internal_fraction_id,
+            reverse_start_id,
+            reverse_start_fraction_id,
+            reverse_internal_id,
+            reverse_internal_fraction_id,
+            absent_id,
+            absent_fraction_id,
+            forward_positions_id,
+            reverse_positions_id,
+        ]);
+    }
+
+    let expected_ids = vec![region_type_id, sequence_type_id, sequence_id, length_id];
+
+    match primer_classification.kind {
+        PrimerClassificationKind::FixedScannable => {
+            if state.absent_count == sampled_count {
+                result.assessment(
+                    AssessmentType::Pass,
+                    "primer_absent_from_reads",
+                    "The primer motif is absent from the sampled reads, which is consistent with sequencing starting at the primer.",
+                    expected_ids,
+                    observed_ids,
+                );
+            } else {
+                result.assessment(
+                    AssessmentType::Interpretation,
+                    "primer_sequence_detected_in_reads",
+                    "The primer motif appears in some sampled reads. This can indicate shifted geometry, readthrough, or primer sequence carried into the read.",
+                    expected_ids,
+                    observed_ids,
+                );
+            }
+        }
+        PrimerClassificationKind::GhostPrimer => {
+            result.assessment(
+                AssessmentType::Interpretation,
+                "ghost_primer_anchor",
+                "The read is anchored by a zero-length ghost primer. This is allowed for projection but cannot be scanned as a sequence motif.",
+                expected_ids,
+                observed_ids,
+            );
+        }
+        PrimerClassificationKind::NonScannablePrimer => {
+            result.assessment(
+                AssessmentType::Warning,
+                "non_scannable_primer",
+                "The region referenced by primer_id is not a concrete fixed primer and cannot be scanned as an anchor motif.",
+                expected_ids,
+                observed_ids,
+            );
         }
     }
+
+    result.build()
 }
 
 fn top_positions(counts: &HashMap<usize, usize>, limit: usize) -> Vec<PositionCount> {

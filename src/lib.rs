@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod commands;
 pub mod context;
 pub mod report;
@@ -22,6 +23,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    #[command(hide = true)]
+    Auth(commands::auth::AuthArgs),
     Coverage(commands::coverage::CoverageArgs),
     Cut(commands::cut::CutArgs),
     Fixed(commands::fixed::FixedArgs),
@@ -74,6 +77,14 @@ pub struct CommonMetricArgs {
     )]
     pub format: OutputFormat,
 
+    #[arg(
+        long,
+        env = "SEQCHECK_AUTH_PROFILE",
+        help = "Auth profile name for remote resources declared in the seqspec",
+        value_name = "PROFILE"
+    )]
+    pub auth_profile: Option<String>,
+
     #[arg(help = "FASTQ files to inspect", required = true, value_name = "FASTQ")]
     pub fastqs: Vec<PathBuf>,
 }
@@ -82,6 +93,7 @@ pub fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Auth(args) => commands::auth::run(&args),
         Commands::Coverage(args) => commands::coverage::run(&args),
         Commands::Cut(args) => commands::cut::run(&args),
         Commands::Fixed(args) => commands::fixed::run(&args),
