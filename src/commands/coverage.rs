@@ -193,7 +193,7 @@ fn build_assignment_warnings(files: &[FileReport<CoverageResult>]) -> Vec<String
     for (region_id, locations) in by_region_id {
         if locations.len() > 1 {
             warnings.push(format!(
-                "region_id '{}' is assigned to multiple reads/files: {}. This usually reflects a human geometry encoding problem in the seqspec.",
+                "region_id '{}' appears in multiple reads/files: {}. This can reflect intended overlapping paired-end reads, or a seqspec/read-geometry mismatch when observed reads extend farther than expected.",
                 region_id,
                 locations.join(", ")
             ));
@@ -208,7 +208,7 @@ fn build_assignment_warnings(files: &[FileReport<CoverageResult>]) -> Vec<String
             )
         {
             warnings.push(format!(
-                "region_type '{}' appears in multiple reads/files: {}. This can duplicate logical elements across reads even when the seqspec passes schema checks.",
+                "region_type '{}' appears in multiple reads/files: {}. This can reflect intended overlapping paired-end reads, or a seqspec/read-geometry mismatch when observed reads extend farther than expected.",
                 region_type,
                 locations.join(", ")
             ));

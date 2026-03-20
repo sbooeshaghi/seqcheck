@@ -354,7 +354,13 @@ fn test_coverage_surfaces_duplicate_assignment_warnings() {
         warning
             .as_str()
             .unwrap()
-            .contains("region_id 'barcode' is assigned to multiple reads/files")
+            .contains("region_id 'barcode' appears in multiple reads/files")
+    }));
+    assert!(warnings.iter().any(|warning| {
+        warning
+            .as_str()
+            .unwrap()
+            .contains("intended overlapping paired-end reads")
     }));
     assert!(warnings.iter().any(|warning| {
         warning
@@ -366,7 +372,7 @@ fn test_coverage_surfaces_duplicate_assignment_warnings() {
         warning
             .as_str()
             .unwrap()
-            .contains("region_id 'umi' is assigned to multiple reads/files")
+            .contains("region_id 'umi' appears in multiple reads/files")
     }));
 }
 

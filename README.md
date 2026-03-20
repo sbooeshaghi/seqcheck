@@ -129,7 +129,7 @@ The `results` payload depends on the command:
 
 - `length`: expected and observed read length ranges
 - `coverage`: expected coordinates and coverage fractions
-- `coverage` also emits warnings when the same `region_id` or biological `region_type` is assigned to multiple reads in one invocation. This is the main guardrail for the failure mode shown in the CRISPR presentation under `docs/`.
+- `coverage` also emits warnings when the same `region_id` or biological `region_type` appears in multiple reads in one invocation. This can reflect intended overlapping paired-end reads, or a seqspec/read-geometry mismatch when the observed reads extend farther than expected. This is the main guardrail for the failure mode shown in the CRISPR presentation under `docs/`.
 - `fixed`: per-region fixed-sequence match counts, strand-aware orientation counts, and top mismatches
 - `onlist`: per-region onlist match counts and top offlist sequences
 - `onlist` reads remote whitelist files directly from their URL. It does not require you to stage the file locally first.
@@ -148,6 +148,6 @@ The `results` payload depends on the command:
 
 ## Notes
 
-The presentation in [docs/Example of seqspec Failing in the CRISPR-pipeline.pptx](docs/Example%20of%20seqspec%20Failing%20in%20the%20CRISPR-pipeline.pptx) shows the motivating failure mode for this tool: a spec can be internally valid but still place biological elements in the wrong reads because of human geometry encoding choices. The `coverage` command now surfaces this explicitly with duplicate-assignment warnings, and `fixed` plus `onlist` check whether the observed read content matches the encoded positions.
+The presentation in [docs/Example of seqspec Failing in the CRISPR-pipeline.pptx](docs/Example%20of%20seqspec%20Failing%20in%20the%20CRISPR-pipeline.pptx) shows the motivating failure mode for this tool: a spec can be internally valid but still miss the effective read geometry that the data reveals. The `coverage` command surfaces that by flagging logical regions that appear in multiple reads, and `fixed` plus `onlist` check whether the observed read content matches the encoded positions.
 
 The `primer` command adds another direct geometry check. Sequencing usually starts at the primer, so the primer sequence itself should usually not appear inside the read. If primer hits are common, or if the primer definition is not a concrete fixed sequence, that is a strong signal that the seqspec is anchoring the read incorrectly.
