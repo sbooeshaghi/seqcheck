@@ -146,6 +146,12 @@ region: linker [4:6] expected=TT
     reverse: 3
     complement: 0
     reverse_complement: 0
+  offset_histogram:
+    -1 1
+    +0 3
+    +2 1
+  absent_reads: 1
+  multi_hit_reads: 1
   top_nonmatching_sequences:
     AC 1
 "#;
@@ -528,6 +534,12 @@ fn test_fixed_json_matches_reverse_complement_on_negative_strand() {
     );
     assert_eq!(target["orientation_counts"]["forward"], 0);
     assert_eq!(target["orientation_counts"]["reverse_complement"], 3);
+    let offset_histogram = target["offset_histogram"].as_array().unwrap();
+    assert_eq!(offset_histogram.len(), 1);
+    assert_eq!(offset_histogram[0]["offset"], 0);
+    assert_eq!(offset_histogram[0]["count"], 3);
+    assert_eq!(target["absent_count"], 0);
+    assert_eq!(target["multi_hit_count"], 0);
 }
 
 #[test]

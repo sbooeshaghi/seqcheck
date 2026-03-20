@@ -4,11 +4,13 @@ use crate::report::{
     ReportEnvelope, SequenceCount,
 };
 use crate::scan::{extract_region, scan_fastq};
-use crate::sequence::{complement_sequence, reverse_complement_sequence, reverse_sequence};
+use crate::sequence::{
+    complement_sequence, find_all_exact_hits, reverse_complement_sequence, reverse_sequence,
+};
 use crate::CommonMetricArgs;
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 const TOP_SEQUENCE_LIMIT: usize = 10;
 
@@ -27,6 +29,12 @@ pub struct OrientationCounts {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct OffsetCount {
+    pub offset: i64,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct FixedRegionResult {
     pub region_id: String,
     pub name: String,
@@ -41,6 +49,9 @@ pub struct FixedRegionResult {
     pub exact_match_count: usize,
     pub exact_match_fraction: f64,
     pub orientation_counts: OrientationCounts,
+    pub offset_histogram: Vec<OffsetCount>,
+    pub absent_count: usize,
+    pub multi_hit_count: usize,
     pub top_nonmatching_sequences: Vec<SequenceCount>,
 }
 
@@ -56,6 +67,9 @@ struct FixedRegionState {
     short_read_count: usize,
     exact_match_count: usize,
     orientation_counts: OrientationCounts,
+    offset_histogram: BTreeMap<i64, usize>,
+    absent_count: usize,
+    multi_hit_count: usize,
     mismatches: HashMap<String, usize>,
 }
 
@@ -84,6 +98,10 @@ pub fn run(args: &FixedArgs) -> Result<()> {
             ExpectedOrientation::Forward
         };
         let fixed_regions = filter_regions_by_sequence_type(&input, "fixed");
+        let expected_sequences = fixed_regions
+            .iter()
+            .map(|region| expected_sequences(&region.region.sequence))
+            .collect::<Vec<_>>();
         let state = vec![FixedRegionState::default(); fixed_regions.len()];
         let regions = fixed_regions.clone();
 
@@ -93,17 +111,30 @@ pub fn run(args: &FixedArgs) -> Result<()> {
             state,
             |state, _, sequence, _| {
                 for (idx, region) in regions.iter().enumerate() {
+                    let expected = &expected_sequences[idx];
+                    let primary_expected = primary_orientation.sequence(expected);
+                    let hits = find_all_exact_hits(sequence, primary_expected);
+                    if hits.is_empty() {
+                        state[idx].absent_count += 1;
+                    } else {
+                        if hits.len() > 1 {
+                            state[idx].multi_hit_count += 1;
+                        }
+                        for hit in hits {
+                            let offset = i64::try_from(hit).unwrap_or_default() - region.start;
+                            *state[idx].offset_histogram.entry(offset).or_insert(0) += 1;
+                        }
+                    }
+
                     match extract_region(sequence, region) {
                         Some(observed) => {
                             state[idx].covered_count += 1;
-                            let expected = expected_sequences(&region.region.sequence);
                             update_orientation_counts(
                                 &mut state[idx].orientation_counts,
                                 &observed,
-                                &expected,
+                                expected,
                             );
 
-                            let primary_expected = primary_orientation.sequence(&expected);
                             if observed == primary_expected {
                                 state[idx].exact_match_count += 1;
                             } else {
@@ -139,6 +170,16 @@ pub fn run(args: &FixedArgs) -> Result<()> {
                     state[idx].covered_count,
                 ),
                 orientation_counts: state[idx].orientation_counts.clone(),
+                offset_histogram: state[idx]
+                    .offset_histogram
+                    .iter()
+                    .map(|(offset, count)| OffsetCount {
+                        offset: *offset,
+                        count: *count,
+                    })
+                    .collect(),
+                absent_count: state[idx].absent_count,
+                multi_hit_count: state[idx].multi_hit_count,
                 top_nonmatching_sequences: top_sequences(
                     &state[idx].mismatches,
                     TOP_SEQUENCE_LIMIT,
@@ -208,6 +249,23 @@ fn render_text(report: &ReportEnvelope<FixedResult>) -> String {
                 region.orientation_counts.complement,
                 region.orientation_counts.reverse_complement,
             ));
+            out.push_str("  offset_histogram:\n");
+            if region.offset_histogram.is_empty() {
+                out.push_str("    (none)\n");
+            } else {
+                for entry in &region.offset_histogram {
+                    out.push_str(&format!(
+                        "    {} {}\n",
+                        format_offset(entry.offset),
+                        entry.count
+                    ));
+                }
+            }
+            out.push_str(&format!(
+                "  absent_reads: {}\n  multi_hit_reads: {}\n",
+                region.absent_count,
+                region.multi_hit_count,
+            ));
             if !region.top_nonmatching_sequences.is_empty() {
                 out.push_str("  top_nonmatching_sequences:\n");
                 for entry in &region.top_nonmatching_sequences {
@@ -268,5 +326,13 @@ fn update_orientation_counts(
     }
     if observed == expected.reverse_complement {
         counts.reverse_complement += 1;
+    }
+}
+
+fn format_offset(offset: i64) -> String {
+    if offset >= 0 {
+        format!("+{}", offset)
+    } else {
+        offset.to_string()
     }
 }
