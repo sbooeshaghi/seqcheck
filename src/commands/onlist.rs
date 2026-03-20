@@ -1,10 +1,11 @@
 use crate::context::{
-    filter_regions_by_sequence_type, load_onlist, load_resolved_inputs, LoadedOnlist,
+    filter_regions_by_sequence_type, load_onlist, load_resolved_inputs, LoadedInputs, LoadedOnlist,
 };
 use crate::report::{
-    input_check_result, top_sequences, write_report, AssessmentType, Report, ResultBuilder,
+    input_check_result, top_sequences, write_report, AssessmentType, AtomicResult, Report,
+    ResultBuilder,
 };
-use crate::scan::{extract_region, scan_fastq};
+use crate::scan::{extract_region, run_collector, FastqCollector};
 use crate::CommonMetricArgs;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -34,6 +35,14 @@ struct OnlistRegionLoad {
     error: Option<String>,
 }
 
+pub(crate) struct OnlistCollector {
+    file_id: String,
+    read_id: String,
+    regions: Vec<seqspec::region::RegionCoordinate>,
+    loads: Vec<OnlistRegionLoad>,
+    state: Vec<OnlistRegionState>,
+}
+
 pub fn run(args: &OnlistArgs) -> Result<()> {
     let loaded = load_resolved_inputs(
         &args.common.spec,
@@ -41,12 +50,6 @@ pub fn run(args: &OnlistArgs) -> Result<()> {
         &args.common.fastqs,
         args.common.auth_profile.as_deref(),
     )?;
-    let crate::context::LoadedInputs {
-        input_check,
-        inputs,
-        remote_access,
-        ..
-    } = loaded;
     let mut report = Report::new(
         "onlist",
         args.common.spec.clone(),
@@ -55,14 +58,38 @@ pub fn run(args: &OnlistArgs) -> Result<()> {
     );
     report
         .results
-        .push(input_check_result(&input_check, &inputs));
+        .push(input_check_result(&loaded.input_check, &loaded.inputs));
+    report
+        .results
+        .extend(collect_results(&loaded, args.common.n_reads)?);
 
-    for input in inputs {
-        let onlist_regions = filter_regions_by_sequence_type(&input, "onlist");
-        let loaded_onlists = onlist_regions
+    write_report(&args.common.output, args.common.format, &report)
+}
+
+pub fn collect_results(loaded: &LoadedInputs, n_reads: usize) -> Result<Vec<AtomicResult>> {
+    let mut results = Vec::new();
+
+    for input in &loaded.inputs {
+        results.extend(run_collector(
+            input,
+            n_reads,
+            OnlistCollector::new(input, &loaded.remote_access)?,
+        )?);
+    }
+
+    Ok(results)
+}
+
+impl OnlistCollector {
+    pub(crate) fn new(
+        input: &crate::context::ResolvedInput,
+        remote_access: &crate::auth::RemoteAccess,
+    ) -> Result<Self> {
+        let regions = filter_regions_by_sequence_type(input, "onlist");
+        let loads = regions
             .iter()
             .map(
-                |region| match load_onlist(&input.spec_base, &region.region, &remote_access) {
+                |region| match load_onlist(&input.spec_base, &region.region, remote_access) {
                     Ok(loaded_onlist) => OnlistRegionLoad {
                         source: loaded_onlist.source.clone(),
                         loaded_onlist: Some(loaded_onlist),
@@ -91,50 +118,59 @@ pub fn run(args: &OnlistArgs) -> Result<()> {
                 },
             )
             .collect::<Vec<_>>();
-        let state = vec![OnlistRegionState::default(); onlist_regions.len()];
-        let regions = onlist_regions.clone();
-        let loads = loaded_onlists.clone();
 
-        let (state, sampled_count) = scan_fastq(
-            &input,
-            args.common.n_reads,
-            state,
-            |state, _, sequence, _| {
-                for (idx, region) in regions.iter().enumerate() {
-                    match extract_region(sequence, region) {
-                        Some(observed) => {
-                            state[idx].covered_count += 1;
-                            if let Some(loaded_onlist) = loads[idx].loaded_onlist.as_ref() {
-                                if loaded_onlist.entries.contains(&observed) {
-                                    state[idx].exact_onlist_count += 1;
-                                } else {
-                                    state[idx].offlist_count += 1;
-                                    *state[idx].offlist_sequences.entry(observed).or_insert(0) += 1;
-                                }
-                            }
-                        }
-                        None => {
-                            state[idx].short_read_count += 1;
+        Ok(Self {
+            file_id: input.file_id(),
+            read_id: input.read.read_id.clone(),
+            state: vec![OnlistRegionState::default(); regions.len()],
+            regions,
+            loads,
+        })
+    }
+}
+
+impl FastqCollector for OnlistCollector {
+    type Output = Vec<AtomicResult>;
+
+    fn observe(&mut self, sequence: &str, _len: usize) -> Result<()> {
+        for (idx, region) in self.regions.iter().enumerate() {
+            match extract_region(sequence, region) {
+                Some(observed) => {
+                    self.state[idx].covered_count += 1;
+                    if let Some(loaded_onlist) = self.loads[idx].loaded_onlist.as_ref() {
+                        if loaded_onlist.entries.contains(&observed) {
+                            self.state[idx].exact_onlist_count += 1;
+                        } else {
+                            self.state[idx].offlist_count += 1;
+                            *self.state[idx]
+                                .offlist_sequences
+                                .entry(observed)
+                                .or_insert(0) += 1;
                         }
                     }
                 }
-                Ok(())
-            },
-        )?;
-
-        for (idx, region) in onlist_regions.iter().enumerate() {
-            report.results.push(build_onlist_result(
-                &input.file_id(),
-                &input.read.read_id,
-                sampled_count,
-                region,
-                &loaded_onlists[idx],
-                &state[idx],
-            ));
+                None => {
+                    self.state[idx].short_read_count += 1;
+                }
+            }
         }
+        Ok(())
     }
 
-    write_report(&args.common.output, args.common.format, &report)
+    fn finish(self, sampled_count: usize) -> Vec<AtomicResult> {
+        let mut results = Vec::new();
+        for (idx, region) in self.regions.iter().enumerate() {
+            results.push(build_onlist_result(
+                &self.file_id,
+                &self.read_id,
+                sampled_count,
+                region,
+                &self.loads[idx],
+                &self.state[idx],
+            ));
+        }
+        results
+    }
 }
 
 fn build_onlist_result(

@@ -2,6 +2,14 @@ use crate::context::ResolvedInput;
 use anyhow::{Context, Result};
 use seqspec::region::RegionCoordinate;
 
+pub trait FastqCollector {
+    type Output;
+
+    fn observe(&mut self, sequence: &str, len: usize) -> Result<()>;
+
+    fn finish(self, sampled_count: usize) -> Self::Output;
+}
+
 pub fn scan_fastq<S, F>(
     input: &ResolvedInput,
     n_reads: usize,
@@ -10,6 +18,17 @@ pub fn scan_fastq<S, F>(
 ) -> Result<(S, usize)>
 where
     F: FnMut(&mut S, usize, &str, usize) -> Result<()>,
+{
+    let sampled = scan_fastq_records(input, n_reads, |record_idx, sequence, len| {
+        update(&mut state, record_idx, sequence, len)
+    })?;
+
+    Ok((state, sampled))
+}
+
+pub fn scan_fastq_records<F>(input: &ResolvedInput, n_reads: usize, mut observe: F) -> Result<usize>
+where
+    F: FnMut(usize, &str, usize) -> Result<()>,
 {
     let limit = if n_reads == 0 { usize::MAX } else { n_reads };
     let mut records = kseq::parse_path(&input.input_path)
@@ -23,10 +42,24 @@ where
 
         sampled += 1;
         let sequence = record.seq();
-        update(&mut state, sampled, sequence, sequence.len())?;
+        observe(sampled, sequence, sequence.len())?;
     }
 
-    Ok((state, sampled))
+    Ok(sampled)
+}
+
+pub fn run_collector<C>(
+    input: &ResolvedInput,
+    n_reads: usize,
+    mut collector: C,
+) -> Result<C::Output>
+where
+    C: FastqCollector,
+{
+    let sampled_count = scan_fastq_records(input, n_reads, |_, sequence, len| {
+        collector.observe(sequence, len)
+    })?;
+    Ok(collector.finish(sampled_count))
 }
 
 pub fn region_stop(region: &RegionCoordinate) -> usize {

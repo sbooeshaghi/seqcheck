@@ -735,7 +735,7 @@ mod tests {
 
         let library = sample_assay().get_libspec("rna").unwrap();
         let barcode = library.get_region_by_id("barcode").pop().unwrap();
-        let access = RemoteAccess::load(None).unwrap();
+        let access = RemoteAccess::anonymous();
         let loaded = load_onlist(&root, &barcode, &access).unwrap();
 
         assert!(loaded.entries.contains("AAAA"));
@@ -790,7 +790,7 @@ mod tests {
             stream.write_all(&body).unwrap();
         });
 
-        let access = RemoteAccess::load(None).unwrap();
+        let access = RemoteAccess::anonymous();
         let observed =
             read_remote_onlist_entries(&access, &format!("http://{}/barcodes.txt.gz", addr))
                 .unwrap();

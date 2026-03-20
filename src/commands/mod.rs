@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod check;
 pub mod coverage;
 pub mod cut;
 pub mod fixed;

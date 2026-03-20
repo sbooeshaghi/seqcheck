@@ -1,8 +1,9 @@
-use crate::context::{filter_regions_by_sequence_type, load_resolved_inputs};
+use crate::context::{filter_regions_by_sequence_type, load_resolved_inputs, LoadedInputs};
 use crate::report::{
-    input_check_result, top_sequences, write_report, AssessmentType, Report, ResultBuilder,
+    input_check_result, top_sequences, write_report, AssessmentType, AtomicResult, Report,
+    ResultBuilder,
 };
-use crate::scan::{extract_region, scan_fastq};
+use crate::scan::{extract_region, run_collector, FastqCollector};
 use crate::sequence::{
     complement_sequence, find_all_exact_hits, reverse_complement_sequence, reverse_sequence,
 };
@@ -38,6 +39,15 @@ struct FixedRegionState {
     mismatches: HashMap<String, usize>,
 }
 
+pub(crate) struct FixedCollector {
+    file_id: String,
+    read_id: String,
+    primary_orientation: ExpectedOrientation,
+    fixed_regions: Vec<seqspec::region::RegionCoordinate>,
+    expected_sequences: Vec<ExpectedSequences>,
+    state: Vec<FixedRegionState>,
+}
+
 pub fn run(args: &FixedArgs) -> Result<()> {
     let loaded = load_resolved_inputs(
         &args.common.spec,
@@ -45,11 +55,6 @@ pub fn run(args: &FixedArgs) -> Result<()> {
         &args.common.fastqs,
         args.common.auth_profile.as_deref(),
     )?;
-    let crate::context::LoadedInputs {
-        input_check,
-        inputs,
-        ..
-    } = loaded;
     let mut report = Report::new(
         "fixed",
         args.common.spec.clone(),
@@ -58,81 +63,107 @@ pub fn run(args: &FixedArgs) -> Result<()> {
     );
     report
         .results
-        .push(input_check_result(&input_check, &inputs));
+        .push(input_check_result(&loaded.input_check, &loaded.inputs));
+    report
+        .results
+        .extend(collect_results(&loaded, args.common.n_reads)?);
 
-    for input in inputs {
+    write_report(&args.common.output, args.common.format, &report)
+}
+
+pub fn collect_results(loaded: &LoadedInputs, n_reads: usize) -> Result<Vec<AtomicResult>> {
+    let mut results = Vec::new();
+
+    for input in &loaded.inputs {
+        results.extend(run_collector(input, n_reads, FixedCollector::new(input))?);
+    }
+
+    Ok(results)
+}
+
+impl FixedCollector {
+    pub(crate) fn new(input: &crate::context::ResolvedInput) -> Self {
         let primary_orientation = if input.read.strand == "neg" {
             ExpectedOrientation::ReverseComplement
         } else {
             ExpectedOrientation::Forward
         };
-        let fixed_regions = filter_regions_by_sequence_type(&input, "fixed");
+        let fixed_regions = filter_regions_by_sequence_type(input, "fixed");
         let expected_sequences = fixed_regions
             .iter()
             .map(|region| expected_sequences(&region.region.sequence))
             .collect::<Vec<_>>();
-        let state = vec![FixedRegionState::default(); fixed_regions.len()];
-        let regions = fixed_regions.clone();
+        let state_len = expected_sequences.len();
 
-        let (state, sampled_count) = scan_fastq(
-            &input,
-            args.common.n_reads,
-            state,
-            |state, _, sequence, _| {
-                for (idx, region) in regions.iter().enumerate() {
-                    let expected = &expected_sequences[idx];
-                    let primary_expected = primary_orientation.sequence(expected);
-                    let hits = find_all_exact_hits(sequence, primary_expected);
-                    if hits.is_empty() {
-                        state[idx].absent_count += 1;
-                    } else {
-                        if hits.len() > 1 {
-                            state[idx].multi_hit_count += 1;
-                        }
-                        for hit in hits {
-                            let offset = i64::try_from(hit).unwrap_or_default() - region.start;
-                            *state[idx].offset_histogram.entry(offset).or_insert(0) += 1;
-                        }
-                    }
-
-                    match extract_region(sequence, region) {
-                        Some(observed) => {
-                            state[idx].covered_count += 1;
-                            update_orientation_counts(
-                                &mut state[idx].orientation_counts,
-                                &observed,
-                                expected,
-                            );
-
-                            if observed == primary_expected {
-                                state[idx].exact_match_count += 1;
-                            } else {
-                                *state[idx].mismatches.entry(observed).or_insert(0) += 1;
-                            }
-                        }
-                        None => {
-                            state[idx].short_read_count += 1;
-                        }
-                    }
-                }
-                Ok(())
-            },
-        )?;
-
-        for (idx, region) in fixed_regions.iter().enumerate() {
-            report.results.push(build_fixed_region_result(
-                &input.file_id(),
-                &input.read.read_id,
-                sampled_count,
-                region,
-                &expected_sequences[idx],
-                primary_orientation,
-                &state[idx],
-            ));
+        Self {
+            file_id: input.file_id(),
+            read_id: input.read.read_id.clone(),
+            primary_orientation,
+            fixed_regions,
+            expected_sequences,
+            state: vec![FixedRegionState::default(); state_len],
         }
     }
+}
 
-    write_report(&args.common.output, args.common.format, &report)
+impl FastqCollector for FixedCollector {
+    type Output = Vec<AtomicResult>;
+
+    fn observe(&mut self, sequence: &str, _len: usize) -> Result<()> {
+        for (idx, region) in self.fixed_regions.iter().enumerate() {
+            let expected = &self.expected_sequences[idx];
+            let primary_expected = self.primary_orientation.sequence(expected);
+            let hits = find_all_exact_hits(sequence, primary_expected);
+            if hits.is_empty() {
+                self.state[idx].absent_count += 1;
+            } else {
+                if hits.len() > 1 {
+                    self.state[idx].multi_hit_count += 1;
+                }
+                for hit in hits {
+                    let offset = i64::try_from(hit).unwrap_or_default() - region.start;
+                    *self.state[idx].offset_histogram.entry(offset).or_insert(0) += 1;
+                }
+            }
+
+            match extract_region(sequence, region) {
+                Some(observed) => {
+                    self.state[idx].covered_count += 1;
+                    update_orientation_counts(
+                        &mut self.state[idx].orientation_counts,
+                        &observed,
+                        expected,
+                    );
+
+                    if observed == primary_expected {
+                        self.state[idx].exact_match_count += 1;
+                    } else {
+                        *self.state[idx].mismatches.entry(observed).or_insert(0) += 1;
+                    }
+                }
+                None => {
+                    self.state[idx].short_read_count += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, sampled_count: usize) -> Vec<AtomicResult> {
+        let mut results = Vec::new();
+        for (idx, region) in self.fixed_regions.iter().enumerate() {
+            results.push(build_fixed_region_result(
+                &self.file_id,
+                &self.read_id,
+                sampled_count,
+                region,
+                &self.expected_sequences[idx],
+                self.primary_orientation,
+                &self.state[idx],
+            ));
+        }
+        results
+    }
 }
 
 fn build_fixed_region_result(

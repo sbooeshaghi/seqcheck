@@ -1,6 +1,8 @@
-use crate::context::{load_resolved_inputs, ExpectedRegion};
-use crate::report::{input_check_result, write_report, AssessmentType, Report, ResultBuilder};
-use crate::scan::{is_region_covered, scan_fastq};
+use crate::context::{load_resolved_inputs, ExpectedRegion, LoadedInputs};
+use crate::report::{
+    input_check_result, write_report, AssessmentType, AtomicResult, Report, ResultBuilder,
+};
+use crate::scan::{is_region_covered, run_collector, FastqCollector};
 use crate::CommonMetricArgs;
 use anyhow::Result;
 use std::collections::BTreeMap;
@@ -22,7 +24,7 @@ pub struct CoverageArgs {
 }
 
 #[derive(Debug, Clone)]
-struct CoverageRegionSummary {
+pub(crate) struct CoverageRegionSummary {
     region_id: String,
     name: String,
     region_type: String,
@@ -34,7 +36,7 @@ struct CoverageRegionSummary {
 }
 
 #[derive(Debug, Clone)]
-struct CoverageFileSummary {
+pub(crate) struct CoverageFileSummary {
     file_id: String,
     read_id: String,
     expected_regions: Vec<ExpectedRegion>,
@@ -50,6 +52,20 @@ struct CoverageState {
     region_counts: Vec<usize>,
 }
 
+pub(crate) struct CoverageCollector {
+    file_id: String,
+    read_id: String,
+    expected_regions: Vec<ExpectedRegion>,
+    expected_stop: usize,
+    coordinates: Vec<seqspec::region::RegionCoordinate>,
+    state: CoverageState,
+}
+
+pub(crate) struct CoverageCollectorOutput {
+    pub(crate) results: Vec<AtomicResult>,
+    pub(crate) summary: CoverageFileSummary,
+}
+
 pub fn run(args: &CoverageArgs) -> Result<()> {
     let loaded = load_resolved_inputs(
         &args.common.spec,
@@ -57,12 +73,6 @@ pub fn run(args: &CoverageArgs) -> Result<()> {
         &args.common.fastqs,
         args.common.auth_profile.as_deref(),
     )?;
-    let crate::context::LoadedInputs {
-        input_check,
-        inputs,
-        ..
-    } = loaded;
-
     let mut report = Report::new(
         "coverage",
         args.common.spec.clone(),
@@ -71,35 +81,63 @@ pub fn run(args: &CoverageArgs) -> Result<()> {
     );
     report
         .results
-        .push(input_check_result(&input_check, &inputs));
+        .push(input_check_result(&loaded.input_check, &loaded.inputs));
+    report
+        .results
+        .extend(collect_results(&loaded, args.common.n_reads)?);
 
+    write_report(&args.common.output, args.common.format, &report)
+}
+
+pub fn collect_results(loaded: &LoadedInputs, n_reads: usize) -> Result<Vec<AtomicResult>> {
+    let mut results = Vec::new();
     let mut summaries = Vec::new();
 
-    for input in inputs {
-        let expected_regions = input.expected_regions();
-        let expected_stop = input.expected_stop();
-        let state = CoverageState {
-            full_read_coverage_count: 0,
-            region_counts: vec![0; input.coordinates.len()],
-        };
-        let coordinates = input.coordinates.clone();
+    for input in &loaded.inputs {
+        let output = run_collector(input, n_reads, CoverageCollector::new(input))?;
+        results.extend(output.results);
+        summaries.push(output.summary);
+    }
 
-        let (state, sampled_count) =
-            scan_fastq(&input, args.common.n_reads, state, |state, _, _, len| {
-                if len >= expected_stop {
-                    state.full_read_coverage_count += 1;
-                }
+    results.extend(build_overlap_results(&summaries));
+    Ok(results)
+}
 
-                for (idx, region) in coordinates.iter().enumerate() {
-                    if is_region_covered(len, region) {
-                        state.region_counts[idx] += 1;
-                    }
-                }
+impl CoverageCollector {
+    pub(crate) fn new(input: &crate::context::ResolvedInput) -> Self {
+        Self {
+            file_id: input.file_id(),
+            read_id: input.read.read_id.clone(),
+            expected_regions: input.expected_regions(),
+            expected_stop: input.expected_stop(),
+            coordinates: input.coordinates.clone(),
+            state: CoverageState {
+                full_read_coverage_count: 0,
+                region_counts: vec![0; input.coordinates.len()],
+            },
+        }
+    }
+}
 
-                Ok(())
-            })?;
+impl FastqCollector for CoverageCollector {
+    type Output = CoverageCollectorOutput;
 
-        let regions = input
+    fn observe(&mut self, _sequence: &str, len: usize) -> Result<()> {
+        if len >= self.expected_stop {
+            self.state.full_read_coverage_count += 1;
+        }
+
+        for (idx, region) in self.coordinates.iter().enumerate() {
+            if is_region_covered(len, region) {
+                self.state.region_counts[idx] += 1;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn finish(self, sampled_count: usize) -> CoverageCollectorOutput {
+        let regions = self
             .coordinates
             .iter()
             .enumerate()
@@ -110,36 +148,34 @@ pub fn run(args: &CoverageArgs) -> Result<()> {
                 sequence_type: region.region.sequence_type.clone(),
                 start: usize::try_from(region.start).unwrap_or_default(),
                 stop: usize::try_from(region.stop).unwrap_or_default(),
-                covered_count: state.region_counts[idx],
-                covered_fraction: crate::report::fraction(state.region_counts[idx], sampled_count),
+                covered_count: self.state.region_counts[idx],
+                covered_fraction: crate::report::fraction(
+                    self.state.region_counts[idx],
+                    sampled_count,
+                ),
             })
             .collect::<Vec<_>>();
 
         let summary = CoverageFileSummary {
-            file_id: input.file_id(),
-            read_id: input.read.read_id.clone(),
-            expected_regions: expected_regions.clone(),
+            file_id: self.file_id,
+            read_id: self.read_id,
+            expected_regions: self.expected_regions,
             sampled_count,
-            full_read_coverage_count: state.full_read_coverage_count,
+            full_read_coverage_count: self.state.full_read_coverage_count,
             full_read_coverage_fraction: crate::report::fraction(
-                state.full_read_coverage_count,
+                self.state.full_read_coverage_count,
                 sampled_count,
             ),
             regions,
         };
 
-        report.results.push(build_file_coverage_result(&summary));
+        let mut results = vec![build_file_coverage_result(&summary)];
         for region in &summary.regions {
-            report
-                .results
-                .push(build_region_coverage_result(&summary, region));
+            results.push(build_region_coverage_result(&summary, region));
         }
-        summaries.push(summary);
+
+        CoverageCollectorOutput { results, summary }
     }
-
-    report.results.extend(build_overlap_results(&summaries));
-
-    write_report(&args.common.output, args.common.format, &report)
 }
 
 fn build_file_coverage_result(summary: &CoverageFileSummary) -> crate::report::AtomicResult {
@@ -284,7 +320,9 @@ fn build_region_coverage_result(
     result.build()
 }
 
-fn build_overlap_results(summaries: &[CoverageFileSummary]) -> Vec<crate::report::AtomicResult> {
+pub(crate) fn build_overlap_results(
+    summaries: &[CoverageFileSummary],
+) -> Vec<crate::report::AtomicResult> {
     let mut by_region_id: BTreeMap<String, Vec<OverlapProjection>> = BTreeMap::new();
     let mut by_region_type: BTreeMap<String, Vec<OverlapProjection>> = BTreeMap::new();
 

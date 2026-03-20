@@ -30,6 +30,7 @@ The current Rust implementation is exact-only. It does not do fuzzy barcode matc
 
 `seqcheck` has these subcommands:
 
+- `check`: run the core read-validation checks in one report
 - `length`: compare observed read lengths to the read length range in the spec
 - `coverage`: report how often each expected region is fully covered by the read
 - `fixed`: check exact matches for fixed-sequence regions
@@ -54,6 +55,18 @@ seqcheck <command> -s SPEC -m MODALITY [-n N] [--format text|json] FASTQ...
 - `FASTQ...`: one or more FASTQ files to inspect
 
 FASTQ paths are resolved against the spec in this order: `file_id`, `filename`, `url` basename, then `read_id`.
+
+`seqcheck check` runs the core QC surface in one report:
+
+- `input_check`
+- `length`
+- `coverage`
+- `primer`
+- `fixed`
+- `onlist`
+- `random`
+
+It does not include `cut` or `hist`, which remain explicit drill-down tools.
 
 Each successful metric report emits an atomic `input_check` result first. It records the expected FASTQ inventory from the seqspec for that modality, the supplied inputs, the resolved matches, and any expected files that were not supplied. Missing expected files are warnings, not hard failures, so subset runs remain valid.
 
@@ -141,6 +154,17 @@ seqcheck length \
   -n 100 \
   ../seqspec/tests/fixtures/fastqs/rna_R1_SRR18677638.fastq.gz \
   ../seqspec/tests/fixtures/fastqs/rna_R2_SRR18677638.fastq.gz
+```
+
+Run the core checks in one pass over the command surface:
+
+```bash
+seqcheck check \
+  --format json \
+  -s tests/fixtures/synthetic/spec.yaml \
+  -m rna \
+  -n 0 \
+  tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
 ```
 
 Check exact onlist membership for the local index read in the upgraded `10xv3` example:

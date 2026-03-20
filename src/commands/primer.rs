@@ -1,6 +1,10 @@
-use crate::context::{load_resolved_inputs, PrimerClassification, PrimerClassificationKind};
-use crate::report::{input_check_result, write_report, AssessmentType, Report, ResultBuilder};
-use crate::scan::scan_fastq;
+use crate::context::{
+    load_resolved_inputs, LoadedInputs, PrimerClassification, PrimerClassificationKind,
+};
+use crate::report::{
+    input_check_result, write_report, AssessmentType, AtomicResult, Report, ResultBuilder,
+};
+use crate::scan::{run_collector, FastqCollector};
 use crate::sequence::find_all_exact_hits;
 use crate::sequence::reverse_complement_sequence;
 use crate::CommonMetricArgs;
@@ -32,6 +36,18 @@ struct PrimerState {
     reverse_complement_positions: HashMap<usize, usize>,
 }
 
+pub(crate) struct PrimerCollector {
+    file_id: String,
+    read_id: String,
+    primer_id: String,
+    primer_region_type: String,
+    primer_sequence_type: String,
+    primer_sequence: String,
+    reverse_complement: String,
+    primer_classification: PrimerClassification,
+    state: PrimerState,
+}
+
 pub fn run(args: &PrimerArgs) -> Result<()> {
     let loaded = load_resolved_inputs(
         &args.common.spec,
@@ -39,11 +55,6 @@ pub fn run(args: &PrimerArgs) -> Result<()> {
         &args.common.fastqs,
         args.common.auth_profile.as_deref(),
     )?;
-    let crate::context::LoadedInputs {
-        input_check,
-        inputs,
-        ..
-    } = loaded;
     let mut report = Report::new(
         "primer",
         args.common.spec.clone(),
@@ -52,74 +63,99 @@ pub fn run(args: &PrimerArgs) -> Result<()> {
     );
     report
         .results
-        .push(input_check_result(&input_check, &inputs));
-
-    for input in inputs {
-        let primer_region = input.primer_region.clone();
-        let primer_classification = input.primer_classification.clone();
-        let primer_sequence = primer_region.sequence.clone();
-        let reverse_complement = reverse_complement_sequence(&primer_sequence);
-        let scannable = primer_classification.scannable;
-
-        let (state, sampled_count) = scan_fastq(
-            &input,
-            args.common.n_reads,
-            PrimerState::default(),
-            |state, _, sequence, _| {
-                if !scannable {
-                    return Ok(());
-                }
-
-                let forward_hits = find_all_exact_hits(sequence, &primer_sequence);
-                let reverse_complement_hits = find_all_exact_hits(sequence, &reverse_complement);
-
-                if forward_hits.iter().any(|position| *position == 0) {
-                    state.forward_start_hit_count += 1;
-                }
-                if forward_hits.iter().any(|position| *position > 0) {
-                    state.forward_internal_hit_count += 1;
-                }
-                if reverse_complement_hits
-                    .iter()
-                    .any(|position| *position == 0)
-                {
-                    state.reverse_complement_start_hit_count += 1;
-                }
-                if reverse_complement_hits.iter().any(|position| *position > 0) {
-                    state.reverse_complement_internal_hit_count += 1;
-                }
-                if forward_hits.is_empty() && reverse_complement_hits.is_empty() {
-                    state.absent_count += 1;
-                }
-
-                for position in forward_hits {
-                    *state.forward_positions.entry(position).or_insert(0) += 1;
-                }
-                for position in reverse_complement_hits {
-                    *state
-                        .reverse_complement_positions
-                        .entry(position)
-                        .or_insert(0) += 1;
-                }
-
-                Ok(())
-            },
-        )?;
-
-        report.results.push(build_primer_result(
-            &input.file_id(),
-            &input.read.read_id,
-            &primer_region.region_id,
-            &primer_region.region_type,
-            &primer_region.sequence_type,
-            &primer_sequence,
-            &primer_classification,
-            sampled_count,
-            &state,
-        ));
-    }
+        .push(input_check_result(&loaded.input_check, &loaded.inputs));
+    report
+        .results
+        .extend(collect_results(&loaded, args.common.n_reads)?);
 
     write_report(&args.common.output, args.common.format, &report)
+}
+
+pub fn collect_results(loaded: &LoadedInputs, n_reads: usize) -> Result<Vec<AtomicResult>> {
+    let mut results = Vec::new();
+
+    for input in &loaded.inputs {
+        results.push(run_collector(input, n_reads, PrimerCollector::new(input))?);
+    }
+
+    Ok(results)
+}
+
+impl PrimerCollector {
+    pub(crate) fn new(input: &crate::context::ResolvedInput) -> Self {
+        let primer_region = input.primer_region.clone();
+        let primer_sequence = primer_region.sequence.clone();
+        Self {
+            file_id: input.file_id(),
+            read_id: input.read.read_id.clone(),
+            primer_id: primer_region.region_id,
+            primer_region_type: primer_region.region_type,
+            primer_sequence_type: primer_region.sequence_type,
+            reverse_complement: reverse_complement_sequence(&primer_sequence),
+            primer_sequence,
+            primer_classification: input.primer_classification.clone(),
+            state: PrimerState::default(),
+        }
+    }
+}
+
+impl FastqCollector for PrimerCollector {
+    type Output = AtomicResult;
+
+    fn observe(&mut self, sequence: &str, _len: usize) -> Result<()> {
+        if !self.primer_classification.scannable {
+            return Ok(());
+        }
+
+        let forward_hits = find_all_exact_hits(sequence, &self.primer_sequence);
+        let reverse_complement_hits = find_all_exact_hits(sequence, &self.reverse_complement);
+
+        if forward_hits.iter().any(|position| *position == 0) {
+            self.state.forward_start_hit_count += 1;
+        }
+        if forward_hits.iter().any(|position| *position > 0) {
+            self.state.forward_internal_hit_count += 1;
+        }
+        if reverse_complement_hits
+            .iter()
+            .any(|position| *position == 0)
+        {
+            self.state.reverse_complement_start_hit_count += 1;
+        }
+        if reverse_complement_hits.iter().any(|position| *position > 0) {
+            self.state.reverse_complement_internal_hit_count += 1;
+        }
+        if forward_hits.is_empty() && reverse_complement_hits.is_empty() {
+            self.state.absent_count += 1;
+        }
+
+        for position in forward_hits {
+            *self.state.forward_positions.entry(position).or_insert(0) += 1;
+        }
+        for position in reverse_complement_hits {
+            *self
+                .state
+                .reverse_complement_positions
+                .entry(position)
+                .or_insert(0) += 1;
+        }
+
+        Ok(())
+    }
+
+    fn finish(self, sampled_count: usize) -> AtomicResult {
+        build_primer_result(
+            &self.file_id,
+            &self.read_id,
+            &self.primer_id,
+            &self.primer_region_type,
+            &self.primer_sequence_type,
+            &self.primer_sequence,
+            &self.primer_classification,
+            sampled_count,
+            &self.state,
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

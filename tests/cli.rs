@@ -119,6 +119,43 @@ fn test_length_json_uses_atomic_schema() {
 }
 
 #[test]
+fn test_check_json_aggregates_core_checks() {
+    let parsed = parse_json(&[
+        "check",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/synthetic/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+    ]);
+
+    assert_eq!(parsed["report_schema_version"], "0.1.0");
+    assert_eq!(parsed["meta"]["command"], "check");
+    assert_eq!(parsed["results"][0]["check"], "input_check");
+
+    let checks = parsed["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["check"].as_str().unwrap())
+        .collect::<Vec<_>>();
+
+    assert!(checks.contains(&"input_check"));
+    assert!(checks.contains(&"length"));
+    assert!(checks.contains(&"coverage"));
+    assert!(checks.contains(&"primer"));
+    assert!(checks.contains(&"fixed"));
+    assert!(checks.contains(&"onlist"));
+    assert!(checks.contains(&"random"));
+    assert!(!checks.contains(&"cut"));
+    assert!(!checks.contains(&"hist"));
+}
+
+#[test]
 fn test_fixed_text_synthetic_golden() {
     let observed = run_success(&[
         "fixed",

@@ -218,6 +218,20 @@ impl AuthProfile {
 }
 
 impl RemoteAccess {
+    pub fn anonymous() -> Self {
+        Self {
+            registry: AuthRegistry {
+                location: ConfigLocation {
+                    path: None,
+                    source: "anonymous".to_string(),
+                    exists: false,
+                },
+                profiles: BTreeMap::new(),
+            },
+            selected_profile: None,
+        }
+    }
+
     pub fn load(selected_profile: Option<&str>) -> Result<Self> {
         let registry = AuthRegistry::load()?;
         if let Some(profile_name) = selected_profile {

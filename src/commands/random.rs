@@ -1,8 +1,9 @@
-use crate::context::{filter_regions_by_sequence_type, load_resolved_inputs};
+use crate::context::{filter_regions_by_sequence_type, load_resolved_inputs, LoadedInputs};
 use crate::report::{
-    input_check_result, top_sequences, write_report, AssessmentType, Report, ResultBuilder,
+    input_check_result, top_sequences, write_report, AssessmentType, AtomicResult, Report,
+    ResultBuilder,
 };
-use crate::scan::{extract_region, scan_fastq};
+use crate::scan::{extract_region, run_collector, FastqCollector};
 use crate::CommonMetricArgs;
 use anyhow::Result;
 use std::collections::HashMap;
@@ -23,6 +24,13 @@ struct RandomRegionState {
     sequences: HashMap<String, usize>,
 }
 
+pub(crate) struct RandomCollector {
+    file_id: String,
+    read_id: String,
+    regions: Vec<seqspec::region::RegionCoordinate>,
+    state: Vec<RandomRegionState>,
+}
+
 pub fn run(args: &RandomArgs) -> Result<()> {
     let loaded = load_resolved_inputs(
         &args.common.spec,
@@ -30,11 +38,6 @@ pub fn run(args: &RandomArgs) -> Result<()> {
         &args.common.fastqs,
         args.common.auth_profile.as_deref(),
     )?;
-    let crate::context::LoadedInputs {
-        input_check,
-        inputs,
-        ..
-    } = loaded;
     let mut report = Report::new(
         "random",
         args.common.spec.clone(),
@@ -43,45 +46,67 @@ pub fn run(args: &RandomArgs) -> Result<()> {
     );
     report
         .results
-        .push(input_check_result(&input_check, &inputs));
-
-    for input in inputs {
-        let random_regions = filter_regions_by_sequence_type(&input, "random");
-        let state = vec![RandomRegionState::default(); random_regions.len()];
-        let regions = random_regions.clone();
-
-        let (state, sampled_count) = scan_fastq(
-            &input,
-            args.common.n_reads,
-            state,
-            |state, _, sequence, _| {
-                for (idx, region) in regions.iter().enumerate() {
-                    match extract_region(sequence, region) {
-                        Some(observed) => {
-                            state[idx].covered_count += 1;
-                            *state[idx].sequences.entry(observed).or_insert(0) += 1;
-                        }
-                        None => {
-                            state[idx].short_read_count += 1;
-                        }
-                    }
-                }
-                Ok(())
-            },
-        )?;
-
-        for (idx, region) in random_regions.iter().enumerate() {
-            report.results.push(build_random_result(
-                &input.file_id(),
-                &input.read.read_id,
-                sampled_count,
-                region,
-                &state[idx],
-            ));
-        }
-    }
+        .push(input_check_result(&loaded.input_check, &loaded.inputs));
+    report
+        .results
+        .extend(collect_results(&loaded, args.common.n_reads)?);
 
     write_report(&args.common.output, args.common.format, &report)
+}
+
+pub fn collect_results(loaded: &LoadedInputs, n_reads: usize) -> Result<Vec<AtomicResult>> {
+    let mut results = Vec::new();
+
+    for input in &loaded.inputs {
+        results.extend(run_collector(input, n_reads, RandomCollector::new(input))?);
+    }
+
+    Ok(results)
+}
+
+impl RandomCollector {
+    pub(crate) fn new(input: &crate::context::ResolvedInput) -> Self {
+        let regions = filter_regions_by_sequence_type(input, "random");
+        Self {
+            file_id: input.file_id(),
+            read_id: input.read.read_id.clone(),
+            state: vec![RandomRegionState::default(); regions.len()],
+            regions,
+        }
+    }
+}
+
+impl FastqCollector for RandomCollector {
+    type Output = Vec<AtomicResult>;
+
+    fn observe(&mut self, sequence: &str, _len: usize) -> Result<()> {
+        for (idx, region) in self.regions.iter().enumerate() {
+            match extract_region(sequence, region) {
+                Some(observed) => {
+                    self.state[idx].covered_count += 1;
+                    *self.state[idx].sequences.entry(observed).or_insert(0) += 1;
+                }
+                None => {
+                    self.state[idx].short_read_count += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, sampled_count: usize) -> Vec<AtomicResult> {
+        let mut results = Vec::new();
+        for (idx, region) in self.regions.iter().enumerate() {
+            results.push(build_random_result(
+                &self.file_id,
+                &self.read_id,
+                sampled_count,
+                region,
+                &self.state[idx],
+            ));
+        }
+        results
+    }
 }
 
 fn build_random_result(
@@ -200,11 +225,17 @@ fn sequence_entropy_bits(sequences: &HashMap<String, usize>) -> f64 {
         return 0.0;
     }
 
-    sequences
+    let mut counts = sequences
         .values()
-        .filter(|count| **count > 0)
+        .copied()
+        .filter(|count| *count > 0)
+        .collect::<Vec<_>>();
+    counts.sort_unstable();
+
+    counts
+        .into_iter()
         .map(|count| {
-            let probability = *count as f64 / total;
+            let probability = count as f64 / total;
             -(probability * probability.log2())
         })
         .sum()

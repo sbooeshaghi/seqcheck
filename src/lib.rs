@@ -25,6 +25,7 @@ pub struct Cli {
 pub enum Commands {
     #[command(hide = true)]
     Auth(commands::auth::AuthArgs),
+    Check(commands::check::CheckArgs),
     Coverage(commands::coverage::CoverageArgs),
     Cut(commands::cut::CutArgs),
     Fixed(commands::fixed::FixedArgs),
@@ -94,6 +95,7 @@ pub fn run() -> Result<()> {
 
     match cli.command {
         Commands::Auth(args) => commands::auth::run(&args),
+        Commands::Check(args) => commands::check::run(&args),
         Commands::Coverage(args) => commands::coverage::run(&args),
         Commands::Cut(args) => commands::cut::run(&args),
         Commands::Fixed(args) => commands::fixed::run(&args),
