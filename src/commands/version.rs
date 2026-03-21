@@ -1,3 +1,4 @@
+use crate::context;
 use crate::report::OutputFormat;
 use anyhow::{bail, Result};
 use clap::Args;
@@ -36,7 +37,7 @@ pub fn run(args: &VersionArgs) -> Result<()> {
         bail!("spec file does not exist: {}", args.spec.display());
     }
 
-    let spec = seqspec::utils::load_spec(&args.spec);
+    let spec = context::load_spec(&args.spec)?;
     let report = VersionReport {
         seqcheck_version: env!("CARGO_PKG_VERSION").to_string(),
         seqspec_file_version: spec.seqspec_version.clone(),

@@ -140,7 +140,22 @@ pub fn load_spec(spec_path: &Path) -> Result<Assay> {
         bail!("spec file does not exist: {}", spec_path.display());
     }
 
-    Ok(seqspec::utils::load_spec(&spec_path.to_path_buf()))
+    let spec = seqspec::utils::load_spec(&spec_path.to_path_buf());
+    Ok(normalize_spec_version(spec))
+}
+
+fn normalize_spec_version(spec: Assay) -> Assay {
+    let version = spec
+        .seqspec_version
+        .clone()
+        .unwrap_or_else(|| "0.0.0".to_string());
+
+    match version.as_str() {
+        "0.0.0" | "0.1.0" | "0.1.1" | "0.2.0" | "0.3.0" => {
+            seqspec::seqspec_upgrade::seqspec_upgrade(spec, &version)
+        }
+        _ => spec,
+    }
 }
 
 pub fn load_resolved_inputs(
@@ -757,6 +772,29 @@ mod tests {
         ]);
 
         assert_eq!(observed, expected);
+    }
+
+    #[test]
+    fn test_load_spec_upgrades_0_3_0_to_0_4_0() {
+        let mut assay = sample_assay();
+        assay.seqspec_version = Some("0.3.0".to_string());
+
+        let root = std::env::temp_dir().join(format!(
+            "seqcheck-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("spec.yaml");
+        std::fs::write(&path, assay.to_bytes().unwrap()).unwrap();
+
+        let loaded = load_spec(&path).unwrap();
+        assert_eq!(loaded.seqspec_version.as_deref(), Some("0.4.0"));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
