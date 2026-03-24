@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>seqcheck report</title>
+<style>
+__SEQCHECK_STYLE__
+</style>
+</head>
+<body>
+<div class="wrap" id="app"></div>
+<div class="mol-tip" id="mol-tip"></div>
+
+<script type="application/json" id="seqcheck-report-data">
+__SEQCHECK_REPORT_JSON__
+</script>
+
+<script type="application/json" id="seqspec-lib-data">
+__SEQSPEC_LIB_JSON__
+</script>
+
+<script>
+window.SEQCHECK_GENERATED_AT = __SEQCHECK_GENERATED_AT__;
+window.SEQCHECK_REPOSITORY = __SEQCHECK_REPOSITORY__;
+window.SEQCHECK_VERSION = __SEQCHECK_VERSION__;
+window.SEQCHECK_REPORT_INPUT = __SEQCHECK_REPORT_INPUT__;
+window.SEQCHECK_REPORT_OUTPUT = __SEQCHECK_REPORT_OUTPUT__;
+</script>
+
+<script>
+__SEQCHECK_APP_JS__
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod commands;
 pub mod context;
+pub mod html_report;
 pub mod report;
 pub mod scan;
 pub mod sequence;
@@ -34,6 +35,7 @@ pub enum Commands {
     Onlist(commands::onlist::OnlistArgs),
     Primer(commands::primer::PrimerArgs),
     Random(commands::random::RandomArgs),
+    Report(commands::report::ReportArgs),
     Version(commands::version::VersionArgs),
 }
 
@@ -104,6 +106,7 @@ pub fn run() -> Result<()> {
         Commands::Onlist(args) => commands::onlist::run(&args),
         Commands::Primer(args) => commands::primer::run(&args),
         Commands::Random(args) => commands::random::run(&args),
+        Commands::Report(args) => commands::report::run(&args),
         Commands::Version(args) => commands::version::run(&args),
     }
 }

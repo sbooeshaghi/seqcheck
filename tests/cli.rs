@@ -1,6 +1,8 @@
 use serde_json::Value;
+use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn manifest_dir() -> &'static str {
     env!("CARGO_MANIFEST_DIR")
@@ -75,6 +77,22 @@ fn has_assessment(result: &Value, code: &str) -> bool {
         .unwrap_or(&Vec::new())
         .iter()
         .any(|assessment| assessment["code"] == code)
+}
+
+fn temp_path(extension: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir()
+        .join(format!(
+            "seqcheck-cli-{}-{}.{}",
+            std::process::id(),
+            nanos,
+            extension
+        ))
+        .display()
+        .to_string()
 }
 
 #[test]
@@ -789,4 +807,81 @@ fn test_version_json_reports_seqspec_version() {
     assert_eq!(parsed["seqcheck_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(parsed["seqspec_file_version"], "0.4.0");
     assert_eq!(parsed["assay_id"], "synthetic");
+}
+
+#[test]
+fn test_report_command_writes_html_with_embedded_payloads() {
+    let report_json = temp_path("json");
+    let report_html = temp_path("html");
+
+    run_success(&[
+        "check",
+        "--format",
+        "json",
+        "-o",
+        &report_json,
+        "-s",
+        "tests/fixtures/synthetic/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+    ]);
+
+    run_success(&["report", "-i", &report_json, "-o", &report_html]);
+
+    let html = fs::read_to_string(&report_html).unwrap();
+    assert!(html.contains("seqcheck report"));
+    assert!(html.contains("id=\"seqcheck-report-data\""));
+    assert!(html.contains("id=\"seqspec-lib-data\""));
+    assert!(html.contains("\"assay_name\": \"Synthetic Seqcheck Fixture\""));
+    assert!(html.contains("\"modality\": \"rna\""));
+
+    let _ = fs::remove_file(report_json);
+    let _ = fs::remove_file(report_html);
+}
+
+#[test]
+fn test_report_command_generates_html_without_library_payload_when_spec_missing() {
+    let report_json = temp_path("json");
+    let report_html = temp_path("html");
+
+    let mut parsed = parse_json(&[
+        "check",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/synthetic/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+    ]);
+    parsed["meta"]["spec"] = Value::String("tests/fixtures/does_not_exist.yaml".to_string());
+    fs::write(&report_json, serde_json::to_string_pretty(&parsed).unwrap()).unwrap();
+
+    run_success(&["report", "-i", &report_json, "-o", &report_html]);
+
+    let html = fs::read_to_string(&report_html).unwrap();
+    assert!(html.contains("id=\"seqspec-lib-data\""));
+    assert!(html.contains(">null</script>") || html.contains(">\nnull\n</script>"));
+
+    let _ = fs::remove_file(report_json);
+    let _ = fs::remove_file(report_html);
+}
+
+#[test]
+fn test_report_command_rejects_invalid_report_json() {
+    let report_json = temp_path("json");
+    let report_html = temp_path("html");
+
+    fs::write(&report_json, "{ not valid json").unwrap();
+
+    let stderr = run_failure(&["report", "-i", &report_json, "-o", &report_html]);
+    assert!(stderr.contains("failed to parse JSON report"));
+
+    let _ = fs::remove_file(report_json);
+    let _ = fs::remove_file(report_html);
 }

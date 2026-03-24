@@ -61,10 +61,17 @@ Run the core checks in one report:
 ```bash
 seqcheck check \
   --format json \
+  -o report.json \
   -s tests/fixtures/synthetic/spec.yaml \
   -m rna \
   -n 0 \
   tests/fixtures/synthetic/fastqs/synthetic_R1.fastq
+```
+
+Render that JSON as a self-contained HTML report:
+
+```bash
+seqcheck report -i report.json -o report.html
 ```
 
 ## Commands
@@ -80,6 +87,7 @@ seqcheck check \
 - `random`: compute whole-sequence entropy for `sequence_type=random` regions
 - `cut`: extract an exact region slice from each covered read
 - `hist`: count exact region slices across reads
+- `report`: render a self-contained HTML QC report from `seqcheck` JSON
 - `version`: print the `seqcheck` version and the seqspec file version
 
 `seqcheck check` runs:
@@ -93,6 +101,28 @@ seqcheck check \
 - `random`
 
 It does not run `cut` or `hist`. Those remain drill-down tools.
+
+## HTML Report
+
+`seqcheck report` takes an existing JSON report and writes one offline HTML file:
+
+```bash
+seqcheck report -i report.json -o report.html
+```
+
+Arguments:
+
+- `-i, --input`: path to a `seqcheck` JSON report
+- `-o, --output`: path to the output HTML report
+- `--spec`: optional seqspec YAML path to use for the library diagram. By default `seqcheck report` uses `meta.spec` from the JSON report
+
+The HTML report is built from the same atomic result objects used in the JSON output. It includes:
+
+- a header with report metadata
+- a run section with the `seqcheck check` and `seqcheck report` commands
+- the seqspec library structure diagram when the spec is available
+- severity counts
+- a flat result list sorted by severity, with expandable expected and observed detail
 
 ## Objects and Check Scope
 

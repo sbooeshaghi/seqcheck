@@ -8,4 +8,5 @@ pub mod length;
 pub mod onlist;
 pub mod primer;
 pub mod random;
+pub mod report;
 pub mod version;
