@@ -317,7 +317,10 @@
     return true;
   }
 
-  function render() {
+  function render(options = {}) {
+    const restoreSearchFocus = Boolean(options.restoreSearchFocus);
+    const restoreSearchPosition =
+      typeof options.restoreSearchPosition === "number" ? options.restoreSearchPosition : null;
     const generatedAt = window.SEQCHECK_GENERATED_AT || "";
     const sorted = results
       .map((result, index) => ({ result, index }))
@@ -448,6 +451,16 @@
 
     app.innerHTML = html;
     bind();
+
+    if (restoreSearchFocus) {
+      const query = document.getElementById("q");
+      if (query) {
+        query.focus();
+        const position =
+          restoreSearchPosition == null ? query.value.length : restoreSearchPosition;
+        query.setSelectionRange(position, position);
+      }
+    }
   }
 
   function bind() {
@@ -463,10 +476,12 @@
     if (query) {
       query.addEventListener("input", () => {
         filterText = query.value;
-        render();
-        query.focus();
+        const cursorPosition = query.selectionStart;
+        render({
+          restoreSearchFocus: true,
+          restoreSearchPosition: cursorPosition,
+        });
       });
-      query.setSelectionRange(query.value.length, query.value.length);
     }
 
     document.querySelectorAll(".ri-head[data-detail]").forEach((element) => {
