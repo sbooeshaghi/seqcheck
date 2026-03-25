@@ -233,7 +233,7 @@ pub fn load_onlist(
         .onlist
         .as_ref()
         .with_context(|| format!("region '{}' has no onlist", region.region_id))?;
-    let source = onlist_source(spec_base, onlist);
+    let source = onlist_source(spec_base, onlist)?;
 
     let entries = match onlist.urltype.as_str() {
         "local" => {
@@ -370,17 +370,19 @@ fn resolve_candidate(spec: &Assay, modality: &str, basename: &str) -> Result<Can
     Ok(best)
 }
 
-fn onlist_source(spec_base: &Path, onlist: &Onlist) -> String {
+fn onlist_source(spec_base: &Path, onlist: &Onlist) -> Result<String> {
     if onlist.urltype == "local" {
-        let relative = PathBuf::from(seqspec::utils::local_onlist_locator(onlist));
+        let relative = PathBuf::from(
+            seqspec::utils::local_onlist_locator(onlist).map_err(|err| anyhow!(err))?,
+        );
         let resolved = if relative.is_absolute() {
             relative
         } else {
             spec_base.join(relative)
         };
-        resolved.to_string_lossy().to_string()
+        Ok(resolved.to_string_lossy().to_string())
     } else {
-        onlist.url.clone()
+        Ok(onlist.url.clone())
     }
 }
 
@@ -769,8 +771,28 @@ mod tests {
             String::new(),
         );
 
-        let source = onlist_source(&root, &onlist);
+        let source = onlist_source(&root, &onlist).unwrap();
         assert_eq!(source, "/tmp/spec-root/nested/barcodes.txt");
+    }
+
+    #[test]
+    fn test_onlist_source_errors_when_local_url_is_empty() {
+        let root = PathBuf::from("/tmp/spec-root");
+        let onlist = Onlist::new(
+            "ol".to_string(),
+            "barcodes.txt".to_string(),
+            "txt".to_string(),
+            0,
+            String::new(),
+            "local".to_string(),
+            String::new(),
+        );
+
+        let error = onlist_source(&root, &onlist).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "local onlist 'barcodes.txt' has empty url"
+        );
     }
 
     #[test]
