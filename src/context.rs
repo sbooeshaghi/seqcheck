@@ -761,6 +761,23 @@ mod tests {
     }
 
     #[test]
+    fn test_onlist_source_prefers_url_when_present_for_local_onlists() {
+        let root = PathBuf::from("/tmp/spec-root");
+        let onlist = Onlist::new(
+            "ol".to_string(),
+            "barcodes.txt".to_string(),
+            "txt".to_string(),
+            0,
+            "nested/barcodes.txt".to_string(),
+            "local".to_string(),
+            String::new(),
+        );
+
+        let source = onlist_source(&root, &onlist);
+        assert_eq!(source, "/tmp/spec-root/nested/barcodes.txt");
+    }
+
+    #[test]
     fn test_normalize_onlist_reader_matches_line_tokenizer() {
         let text = "AAAA\t1\nCCCC\t2\n\nGGGG\n";
         let observed = normalize_onlist_reader(text.as_bytes()).unwrap();
