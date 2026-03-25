@@ -1,7 +1,9 @@
 use crate::context::load_spec;
 use crate::report::{AssessmentType, Report};
 use anyhow::{Context, Result};
-use seqspec::assay::Assay;
+use seqspec::assay::{Assay, LibKit, LibProtocol, SeqKit, SeqProtocol};
+use seqspec::file::File as SeqspecFile;
+use seqspec::onlist::Onlist as SeqspecOnlist;
 use seqspec::region::Region;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -28,24 +30,68 @@ pub struct SeqspecLibRegion {
     pub bp_start: i64,
     pub bp_end: i64,
     pub depth: usize,
+    pub parent_region_id: Option<String>,
+    pub path_region_ids: Vec<String>,
+    pub path_names: Vec<String>,
     pub is_leaf: bool,
     pub child_region_ids: Vec<String>,
+    pub onlist: Option<SeqspecLibOnlist>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SeqspecLibOnlist {
+    pub file_id: String,
+    pub filename: String,
+    pub filetype: String,
+    pub filesize: i64,
+    pub url: String,
+    pub urltype: String,
+    pub md5: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeqspecLibRead {
     pub read_id: String,
+    pub name: String,
     pub label: String,
+    pub min_len: i64,
+    pub max_len: i64,
     pub strand: String,
     pub start: i64,
     pub end: i64,
     pub primer_id: String,
+    pub files: Vec<SeqspecLibFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SeqspecLibFile {
+    pub file_id: String,
+    pub filename: String,
+    pub filetype: String,
+    pub filesize: i64,
+    pub url: String,
+    pub urltype: String,
+    pub md5: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SeqspecMetadataRow {
+    pub protocol_id: Option<String>,
+    pub kit_id: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SeqspecLibData {
+    pub assay_id: String,
     pub assay_name: String,
     pub modality: String,
+    pub library_region_id: String,
+    pub seqspec_version: Option<String>,
+    pub sequence_protocols: Vec<SeqspecMetadataRow>,
+    pub sequence_kits: Vec<SeqspecMetadataRow>,
+    pub library_protocols: Vec<SeqspecMetadataRow>,
+    pub library_kits: Vec<SeqspecMetadataRow>,
     pub region_nodes: Vec<SeqspecLibRegion>,
     pub regions: Vec<SeqspecLibRegion>,
     pub reads: Vec<SeqspecLibRead>,
@@ -124,6 +170,9 @@ pub fn build_seqspec_lib_data(spec: &Assay, modality: &str) -> Result<SeqspecLib
             child,
             0,
             total_bp,
+            None,
+            Vec::new(),
+            Vec::new(),
             &mut region_nodes,
             &mut regions,
             &mut spans,
@@ -144,18 +193,29 @@ pub fn build_seqspec_lib_data(spec: &Assay, modality: &str) -> Result<SeqspecLib
 
             Some(SeqspecLibRead {
                 read_id: read.read_id,
+                name: read.name.clone(),
                 label: read.name,
+                min_len: read.min_len,
+                max_len: read.max_len,
                 strand: read.strand,
                 start,
                 end,
                 primer_id: read.primer_id,
+                files: read.files.iter().map(file_view).collect(),
             })
         })
         .collect();
 
     Ok(SeqspecLibData {
+        assay_id: spec.assay_id.clone(),
         assay_name: spec.name.clone(),
         modality: modality.to_string(),
+        library_region_id: libspec.region_id,
+        seqspec_version: spec.seqspec_version.clone(),
+        sequence_protocols: seq_protocol_rows(spec.sequence_protocol.as_ref(), modality),
+        sequence_kits: seq_kit_rows(spec.sequence_kit.as_ref(), modality),
+        library_protocols: lib_protocol_rows(spec.library_protocol.as_ref(), modality),
+        library_kits: lib_kit_rows(spec.library_kit.as_ref(), modality),
         region_nodes,
         regions,
         reads,
@@ -213,10 +273,17 @@ fn collect_region_layout(
     region: &Region,
     depth: usize,
     bp_start: i64,
+    parent_region_id: Option<String>,
+    path_region_ids: Vec<String>,
+    path_names: Vec<String>,
     region_nodes: &mut Vec<SeqspecLibRegion>,
     leaves: &mut Vec<SeqspecLibRegion>,
     spans: &mut HashMap<String, RegionSpan>,
 ) -> i64 {
+    let mut region_path_ids = path_region_ids;
+    region_path_ids.push(region.region_id.clone());
+    let mut region_path_names = path_names;
+    region_path_names.push(region.name.clone());
     let end = if region.regions.is_empty() {
         let len = region.max_len.max(0);
         let node = SeqspecLibRegion {
@@ -235,8 +302,12 @@ fn collect_region_layout(
             bp_start,
             bp_end: bp_start + len,
             depth,
+            parent_region_id,
+            path_region_ids: region_path_ids,
+            path_names: region_path_names,
             is_leaf: true,
             child_region_ids: Vec::new(),
+            onlist: onlist_view(region.onlist.clone()),
         };
         region_nodes.push(node.clone());
         leaves.push(node);
@@ -244,7 +315,17 @@ fn collect_region_layout(
     } else {
         let mut current = bp_start;
         for child in &region.regions {
-            current = collect_region_layout(child, depth + 1, current, region_nodes, leaves, spans);
+            current = collect_region_layout(
+                child,
+                depth + 1,
+                current,
+                Some(region.region_id.clone()),
+                region_path_ids.clone(),
+                region_path_names.clone(),
+                region_nodes,
+                leaves,
+                spans,
+            );
         }
         region_nodes.push(SeqspecLibRegion {
             region_id: region.region_id.clone(),
@@ -262,12 +343,16 @@ fn collect_region_layout(
             bp_start,
             bp_end: current,
             depth,
+            parent_region_id,
+            path_region_ids: region_path_ids,
+            path_names: region_path_names,
             is_leaf: false,
             child_region_ids: region
                 .regions
                 .iter()
                 .map(|child| child.region_id.clone())
                 .collect(),
+            onlist: onlist_view(region.onlist.clone()),
         });
         current
     };
@@ -281,6 +366,100 @@ fn collect_region_layout(
     );
 
     end
+}
+
+fn onlist_view(onlist: Option<SeqspecOnlist>) -> Option<SeqspecLibOnlist> {
+    onlist.map(|onlist| SeqspecLibOnlist {
+        file_id: onlist.file_id,
+        filename: onlist.filename,
+        filetype: onlist.filetype,
+        filesize: onlist.filesize,
+        url: onlist.url,
+        urltype: onlist.urltype,
+        md5: onlist.md5,
+    })
+}
+
+fn file_view(file: &SeqspecFile) -> SeqspecLibFile {
+    SeqspecLibFile {
+        file_id: file.file_id.clone(),
+        filename: file.filename.clone(),
+        filetype: file.filetype.clone(),
+        filesize: file.filesize,
+        url: file.url.clone(),
+        urltype: file.urltype.clone(),
+        md5: file.md5.clone(),
+    }
+}
+
+fn seq_protocol_rows(
+    entries: Option<&Vec<SeqProtocol>>,
+    modality: &str,
+) -> Vec<SeqspecMetadataRow> {
+    entries
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry.modality == modality)
+                .map(|entry| SeqspecMetadataRow {
+                    protocol_id: Some(entry.protocol_id.clone()),
+                    kit_id: None,
+                    name: Some(entry.name.clone()),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn seq_kit_rows(entries: Option<&Vec<SeqKit>>, modality: &str) -> Vec<SeqspecMetadataRow> {
+    entries
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry.modality == modality)
+                .map(|entry| SeqspecMetadataRow {
+                    protocol_id: None,
+                    kit_id: Some(entry.kit_id.clone()),
+                    name: entry.name.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn lib_protocol_rows(
+    entries: Option<&Vec<LibProtocol>>,
+    modality: &str,
+) -> Vec<SeqspecMetadataRow> {
+    entries
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry.modality == modality)
+                .map(|entry| SeqspecMetadataRow {
+                    protocol_id: Some(entry.protocol_id.clone()),
+                    kit_id: None,
+                    name: Some(entry.name.clone()),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn lib_kit_rows(entries: Option<&Vec<LibKit>>, modality: &str) -> Vec<SeqspecMetadataRow> {
+    entries
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry.modality == modality)
+                .map(|entry| SeqspecMetadataRow {
+                    protocol_id: None,
+                    kit_id: Some(entry.kit_id.clone()),
+                    name: entry.name.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn escape_script_json(json: &str) -> String {
@@ -603,16 +782,29 @@ mod tests {
         let spec = load_spec(Path::new("tests/fixtures/bad_geometry/spec.yaml")).unwrap();
         let lib_data = build_seqspec_lib_data(&spec, "rna").unwrap();
 
+        assert_eq!(lib_data.assay_id, "bad-geometry");
+        assert_eq!(lib_data.library_region_id, "rna");
         assert_eq!(lib_data.total_bp, 22);
+        assert_eq!(lib_data.sequence_protocols.len(), 0);
         assert_eq!(lib_data.regions[0].region_id, "primer1");
         assert_eq!(lib_data.regions[1].region_id, "barcode");
         assert_eq!(lib_data.regions[5].region_id, "primer2");
         assert_eq!(lib_data.regions[5].bp_start, 18);
+        assert_eq!(lib_data.regions[1].path_region_ids, vec!["barcode"]);
+        assert_eq!(lib_data.regions[1].path_names, vec!["Barcode"]);
+        assert_eq!(
+            lib_data.regions[1].onlist.as_ref().unwrap().url,
+            "onlists/bad_barcodes.txt"
+        );
 
         assert_eq!(lib_data.reads.len(), 2);
         assert_eq!(lib_data.reads[0].read_id, "bad_R1");
+        assert_eq!(lib_data.reads[0].name, "Bad Read 1");
+        assert_eq!(lib_data.reads[0].min_len, 6);
         assert_eq!(lib_data.reads[0].start, 4);
         assert_eq!(lib_data.reads[0].end, 10);
+        assert_eq!(lib_data.reads[0].files.len(), 1);
+        assert_eq!(lib_data.reads[0].files[0].file_id, "bad_R1.fastq");
         assert_eq!(lib_data.reads[1].read_id, "bad_R2");
         assert_eq!(lib_data.reads[1].start, 4);
         assert_eq!(lib_data.reads[1].end, 18);
@@ -648,6 +840,7 @@ mod tests {
         assert_eq!(parent.bp_start, 0);
         assert_eq!(parent.bp_end, 4);
         assert_eq!(parent.child_region_ids, vec!["fixed_a", "fixed_t"]);
+        assert_eq!(parent.path_region_ids, vec!["joined_block"]);
 
         assert_eq!(lib_data.reads.len(), 1);
         assert_eq!(lib_data.reads[0].primer_id, "joined_block");

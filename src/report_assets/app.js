@@ -11,12 +11,13 @@
   const seqcheckVersion = window.SEQCHECK_VERSION || "";
   const reportInputPath = window.SEQCHECK_REPORT_INPUT || "report.json";
   const reportOutputPath = window.SEQCHECK_REPORT_OUTPUT || "report.html";
+  const selected = {};
 
   let filterText = "";
   let filterSev = null;
 
   function esc(value) {
-    if (value == null) {
+    if (value == null || value === "") {
       return '<span class="val-null">\u2014</span>';
     }
     const div = document.createElement("div");
@@ -24,8 +25,14 @@
     return div.innerHTML;
   }
 
+  function escAttr(value) {
+    const div = document.createElement("div");
+    div.textContent = value == null ? "" : String(value);
+    return div.innerHTML;
+  }
+
   function fmtVal(value) {
-    if (value == null) {
+    if (value == null || value === "") {
       return '<span class="val-null">\u2014</span>';
     }
     if (typeof value === "boolean") {
@@ -53,9 +60,13 @@
   }
 
   function naturalDesc(result) {
-    const assessments = (result.assessment || []).filter((assessment) => assessment.type !== "pass");
+    const assessments = (result.assessment || []).filter(
+      (assessment) => assessment.type !== "pass",
+    );
     if (assessments.length) {
-      assessments.sort((left, right) => (SEV[left.type] || 3) - (SEV[right.type] || 3));
+      assessments.sort(
+        (left, right) => (SEV[left.type] || 3) - (SEV[right.type] || 3),
+      );
       return assessments[0].description;
     }
     if (result.assessment && result.assessment.length) {
@@ -85,7 +96,10 @@
 
   function suppliedInputPaths() {
     const inputCheck = inputCheckResult();
-    const supplied = findMetric(inputCheck ? inputCheck.observed : [], "supplied_input_paths");
+    const supplied = findMetric(
+      inputCheck ? inputCheck.observed : [],
+      "supplied_input_paths",
+    );
     const value = supplied && supplied.data ? supplied.data.value : [];
     if (!Array.isArray(value)) {
       return [];
@@ -114,7 +128,7 @@
     return ["seqcheck", "report", "-i", reportInputPath, "-o", reportOutputPath].join(" ");
   }
 
-  function renderItem(item) {
+  function renderMetricItem(item) {
     const data = item.data;
     if (!data) {
       return "";
@@ -152,9 +166,14 @@
       });
       const uid = "t" + Math.random().toString(36).slice(2, 8);
       let html = `<div class="tbl-toggle" data-tbl="${uid}">${esc(item.name)} \u2014 ${data.value.length} records \u25b8</div>`;
-      html += `<div class="tbl-inner" id="${uid}"><div class="tbl-wrap"><table class="dtbl"><thead><tr>${keys.map((key) => "<th>" + esc(key) + "</th>").join("")}</tr></thead><tbody>`;
+      html += `<div class="tbl-inner" id="${uid}"><div class="tbl-wrap"><table class="dtbl"><thead><tr>${keys
+        .map((key) => "<th>" + esc(key) + "</th>")
+        .join("")}</tr></thead><tbody>`;
       data.value.forEach((record) => {
-        html += "<tr>" + keys.map((key) => "<td>" + fmtVal(record[key]) + "</td>").join("") + "</tr>";
+        html +=
+          "<tr>" +
+          keys.map((key) => "<td>" + fmtVal(record[key]) + "</td>").join("") +
+          "</tr>";
       });
       html += "</tbody></table></div></div>";
       return html;
@@ -162,16 +181,204 @@
     return "";
   }
 
+  function lengthLabel(minLen, maxLen) {
+    if (minLen === maxLen) {
+      return `${fmtVal(minLen)} bp`;
+    }
+    return `${fmtVal(minLen)}-${fmtVal(maxLen)} bp`;
+  }
+
+  function bpRangeLabel(start, end) {
+    return `${fmtVal(start)}-${fmtVal(end)} bp`;
+  }
+
+  function kvList(rows) {
+    return `<div class="kv-list">${rows
+      .map(
+        ([key, value, mono]) =>
+          `<div class="kv-row"><div class="kv-key">${esc(
+            key,
+          )}</div><div class="kv-value${mono ? " mono" : ""}">${value}</div></div>`,
+      )
+      .join("")}</div>`;
+  }
+
+  function detailSection(title, body) {
+    if (!body) {
+      return "";
+    }
+    return `<section class="detail-section"><div class="detail-title">${esc(
+      title,
+    )}</div><div class="detail-content">${body}</div></section>`;
+  }
+
+  function detailTable(title, rows, columns) {
+    if (!rows || !rows.length) {
+      return "";
+    }
+    const keys =
+      columns ||
+      Array.from(
+        rows.reduce((seen, row) => {
+          Object.keys(row).forEach((key) => seen.add(key));
+          return seen;
+        }, new Set()),
+      );
+    return detailSection(
+      title,
+      `<div class="table-wrap"><table><thead><tr>${keys
+        .map((key) => `<th>${esc(key)}</th>`)
+        .join("")}</tr></thead><tbody>${rows
+        .map(
+          (row) =>
+            `<tr>${keys.map((key) => `<td>${fmtVal(row[key])}</td>`).join("")}</tr>`,
+        )
+        .join("")}</tbody></table></div>`,
+    );
+  }
+
+  function detailShell(header, sections) {
+    return `<div class="detail-shell"><div class="detail-shell-head">${header}</div><div class="detail-shell-body">${sections.join(
+      "",
+    )}</div></div>`;
+  }
+
+  function pathLabel(pathNames) {
+    return (pathNames || []).join(" / ");
+  }
+
+  function currentSelection() {
+    if (!libData) {
+      return null;
+    }
+    return selected[libData.modality] || null;
+  }
+
+  function visibleRegionsForRead(read) {
+    return (libData.regions || []).filter(
+      (region) => region.bp_start < read.end && region.bp_end > read.start,
+    );
+  }
+
+  function visibleReadsForRegion(region) {
+    return (libData.reads || []).filter(
+      (read) => region.bp_start < read.end && region.bp_end > read.start,
+    );
+  }
+
+  function overlappingReads(read) {
+    return (libData.reads || []).filter(
+      (other) =>
+        other.read_id !== read.read_id &&
+        Math.max(read.start, other.start) < Math.min(read.end, other.end),
+    );
+  }
+
+  function overlapRows() {
+    const rows = [];
+    const reads = libData.reads || [];
+    for (let i = 0; i < reads.length; i += 1) {
+      for (let j = i + 1; j < reads.length; j += 1) {
+        const left = reads[i];
+        const right = reads[j];
+        const start = Math.max(left.start, right.start);
+        const end = Math.min(left.end, right.end);
+        if (start < end) {
+          rows.push({
+            left_read: left.label || left.read_id,
+            right_read: right.label || right.read_id,
+            bp_range: bpRangeLabel(start, end),
+            overlap_bp: end - start,
+          });
+        }
+      }
+    }
+    return rows;
+  }
+
+  function regionTooltip(region) {
+    let html = `<div class="tip-name">${esc(region.name)}</div>`;
+    html += `<div>${esc(region.region_type)} \u00b7 ${esc(
+      region.sequence_type,
+    )} \u00b7 ${esc(lengthLabel(region.min_len, region.max_len))}</div>`;
+    html += `<div class="tip-dim">${esc(bpRangeLabel(region.bp_start, region.bp_end))}</div>`;
+    if (!region.is_leaf) {
+      html += `<div class="tip-dim">${esc(region.child_region_ids.length)} child regions</div>`;
+    }
+    if (region.sequence) {
+      const preview =
+        region.sequence.length <= 40
+          ? region.sequence
+          : `${region.sequence.slice(0, 37)}\u2026`;
+      html += `<div class="tip-dim">${esc(preview)}</div>`;
+    }
+    return html;
+  }
+
+  function readTooltip(read) {
+    let html = `<div class="tip-name">${esc(read.label || read.read_id)}</div>`;
+    html += `<div>${esc(read.read_id)} \u00b7 ${esc(read.strand)} \u00b7 ${esc(
+      lengthLabel(read.min_len, read.max_len),
+    )}</div>`;
+    html += `<div class="tip-dim">${esc(bpRangeLabel(read.start, read.end))} anchored at ${esc(
+      read.primer_id,
+    )}</div>`;
+    return html;
+  }
+
+  function seqTypeColor(sequenceType) {
+    if (sequenceType === "onlist") {
+      return "var(--reg-onlist)";
+    }
+    if (sequenceType === "random") {
+      return "var(--reg-random)";
+    }
+    return "var(--reg-fixed)";
+  }
+
+  function seqTypeStroke(sequenceType) {
+    if (sequenceType === "onlist") {
+      return "var(--reg-onlist-stroke)";
+    }
+    if (sequenceType === "random") {
+      return "var(--reg-random-stroke)";
+    }
+    return "var(--reg-fixed-stroke)";
+  }
+
+  function regionIsSelected(region, selection) {
+    if (!selection || selection.kind !== "region") {
+      return false;
+    }
+    return (region.path_region_ids || []).includes(selection.id);
+  }
+
+  function resultMatchesSelection(result, selection) {
+    if (!selection) {
+      return false;
+    }
+    if (selection.kind === "region") {
+      return (result.regions || []).includes(selection.id);
+    }
+    if (selection.kind === "read") {
+      return (result.reads || []).includes(selection.id);
+    }
+    return false;
+  }
+
   function buildMolSvg() {
     if (!libData || !libData.regions || !libData.regions.length) {
       return "";
     }
 
-    const regions = libData.regions;
-    const regionNodes = libData.region_nodes || regions;
+    const leafRegions = libData.regions || [];
+    const regionNodes = libData.region_nodes || [];
     const groupRegions = regionNodes.filter((region) => !region.is_leaf);
     const reads = libData.reads || [];
-    const totalBp = libData.total_bp || regions.reduce((sum, region) => sum + region.len, 0);
+    const totalBp =
+      libData.total_bp || leafRegions.reduce((sum, region) => sum + region.len, 0);
+    const selection = currentSelection();
+
     const pad = { left: 10, right: 10 };
     const molW = 860;
     const barY = 70;
@@ -187,7 +394,7 @@
     const groupTrackTop = barY - groupLevels * groupGap - 4;
     const rects = [];
 
-    let rawWidths = regions.map((region) => region.len * bpScale);
+    let rawWidths = leafRegions.map((region) => region.len * bpScale);
     let deficit = 0;
     rawWidths = rawWidths.map((px) => {
       if (px < minPx) {
@@ -197,14 +404,18 @@
       return px;
     });
     if (deficit > 0) {
-      const shrinkTotal = rawWidths.filter((px) => px > minPx).reduce((sum, px) => sum + px, 0);
+      const shrinkTotal = rawWidths
+        .filter((px) => px > minPx)
+        .reduce((sum, px) => sum + px, 0);
       if (shrinkTotal > 0) {
-        rawWidths = rawWidths.map((px) => (px > minPx ? px - deficit * (px / shrinkTotal) : px));
+        rawWidths = rawWidths.map((px) =>
+          px > minPx ? px - deficit * (px / shrinkTotal) : px,
+        );
       }
     }
 
     let currentX = pad.left;
-    regions.forEach((region, index) => {
+    leafRegions.forEach((region, index) => {
       const width = rawWidths[index];
       rects.push({ ...region, x: currentX, w: width });
       currentX += width;
@@ -215,34 +426,13 @@
         return pad.left;
       }
       for (const region of rects) {
-        const regionStop = region.bp_end;
-        if (bp <= regionStop) {
+        if (bp <= region.bp_end) {
           const fraction = region.len === 0 ? 0 : (bp - region.bp_start) / region.len;
           return region.x + fraction * region.w;
         }
       }
       const last = rects[rects.length - 1];
-      return last.x + last.w;
-    }
-
-    function seqTypeColor(sequenceType) {
-      if (sequenceType === "onlist") {
-        return "var(--reg-onlist)";
-      }
-      if (sequenceType === "random") {
-        return "var(--reg-random)";
-      }
-      return "var(--reg-fixed)";
-    }
-
-    function seqTypeStroke(sequenceType) {
-      if (sequenceType === "onlist") {
-        return "var(--reg-onlist-stroke)";
-      }
-      if (sequenceType === "random") {
-        return "var(--reg-random-stroke)";
-      }
-      return "var(--reg-fixed-stroke)";
+      return last ? last.x + last.w : pad.left;
     }
 
     let svg = "";
@@ -253,21 +443,31 @@
       const x = bpToX(region.bp_start);
       const width = Math.max(bpToX(region.bp_end) - x, 1);
       const y = groupTrackTop + (region.depth || 0) * groupGap;
-      svg += `<rect class="group-rect" data-region="${esc(region.region_id)}" x="${x}" y="${y}" width="${width}" height="${groupHeight}" rx="2" />`;
+      const selectedClass = regionIsSelected(region, selection) ? " selected" : "";
+      svg += `<rect class="group-rect${selectedClass}" data-kind="region" data-modality="${esc(
+        libData.modality,
+      )}" data-id="${esc(region.region_id)}" x="${x}" y="${y}" width="${width}" height="${groupHeight}" rx="2" />`;
       if (width > 42) {
         svg += `<text class="group-label" x="${x + 3}" y="${y - 2}">${esc(region.name)}</text>`;
       }
     });
 
     rects.forEach((region) => {
-      svg += `<rect class="region-rect" data-region="${esc(region.region_id)}" x="${region.x}" y="${barY}" width="${region.w}" height="${barH}" rx="2" fill="${seqTypeColor(region.sequence_type)}" stroke="${seqTypeStroke(region.sequence_type)}" stroke-width="0.5"/>`;
+      const selectedClass = regionIsSelected(region, selection) ? " selected" : "";
+      svg += `<rect class="region-rect${selectedClass}" data-kind="region" data-modality="${esc(
+        libData.modality,
+      )}" data-id="${esc(region.region_id)}" x="${region.x}" y="${barY}" width="${region.w}" height="${barH}" rx="2" fill="${seqTypeColor(
+        region.sequence_type,
+      )}" stroke="${seqTypeStroke(region.sequence_type)}" stroke-width="0.5"/>`;
     });
 
     const labelY = barY + barH + 10;
     rects.forEach((region) => {
       const centerX = region.x + region.w / 2;
       if (region.w > 14) {
-        svg += `<text class="region-label" x="${centerX}" y="${labelY}" text-anchor="end" transform="rotate(-40 ${centerX} ${labelY})">${esc(region.name)}</text>`;
+        svg += `<text class="region-label" x="${centerX}" y="${labelY}" text-anchor="end" transform="rotate(-40 ${centerX} ${labelY})">${esc(
+          region.name,
+        )}</text>`;
       }
     });
 
@@ -276,7 +476,7 @@
       svg += `<text class="bp-label" x="${region.x + region.w}" y="${barY - 3}" text-anchor="middle">${region.bp_end}</text>`;
     });
 
-    const readColors = ["#6366f1", "#059669", "#d97706", "#dc2626", "#7c3aed"];
+    const readColors = ["#1e40af", "#059669", "#d97706", "#dc2626", "#7c3aed"];
     const posReads = reads.filter((read) => read.strand === "pos");
     const negReads = reads.filter((read) => read.strand === "neg");
 
@@ -285,17 +485,38 @@
       const x1 = bpToX(read.start);
       const x2 = bpToX(read.end);
       const arrowSize = 5;
+      const selectedClass =
+        selection && selection.kind === "read" && selection.id === read.read_id
+          ? " selected"
+          : "";
+      const groupAttrs = `class="read-group${selectedClass}" data-kind="read" data-modality="${esc(
+        libData.modality,
+      )}" data-id="${esc(read.read_id)}"`;
 
       if (above) {
-        svg += `<line x1="${x1}" y1="${yBase}" x2="${x2 - arrowSize}" y2="${yBase}" stroke="${color}" class="read-line"/>`;
-        svg += `<polygon points="${x2},${yBase} ${x2 - arrowSize},${yBase - arrowSize} ${x2 - arrowSize},${yBase + arrowSize}" fill="${color}"/>`;
-        svg += `<line x1="${x1}" y1="${yBase}" x2="${x1}" y2="${barY}" stroke="${color}" stroke-width="1" stroke-dasharray="2,2" opacity="0.4"/>`;
-        svg += `<text class="read-label" x="${x1 + 3}" y="${yBase - 5}" fill="${color}">${esc(read.label)}</text>`;
+        const y = yBase;
+        svg += `<g ${groupAttrs}><line x1="${x1}" y1="${y}" x2="${Math.max(
+          x1,
+          x2 - arrowSize,
+        )}" y2="${y}" stroke="${color}" class="read-line"/><polygon points="${x2},${y} ${
+          x2 - arrowSize
+        },${y - arrowSize} ${x2 - arrowSize},${y + arrowSize}" fill="${color}" stroke="${color}"/><line x1="${x1}" y1="${y}" x2="${x1}" y2="${barY}" stroke="${color}" stroke-width="1" stroke-dasharray="2,2" opacity="0.4"/><text class="read-label" x="${
+          x1 + 3
+        }" y="${y - 5}" fill="${color}">${esc(read.label || read.read_id)}</text></g>`;
       } else {
-        svg += `<line x1="${x2}" y1="${yBase}" x2="${x1 + arrowSize}" y2="${yBase}" stroke="${color}" class="read-line"/>`;
-        svg += `<polygon points="${x1},${yBase} ${x1 + arrowSize},${yBase - arrowSize} ${x1 + arrowSize},${yBase + arrowSize}" fill="${color}"/>`;
-        svg += `<line x1="${x2}" y1="${yBase}" x2="${x2}" y2="${barY + barH}" stroke="${color}" stroke-width="1" stroke-dasharray="2,2" opacity="0.4"/>`;
-        svg += `<text class="read-label" x="${x2 - 3}" y="${yBase + 13}" text-anchor="end" fill="${color}">${esc(read.label)}</text>`;
+        const y = yBase;
+        svg += `<g ${groupAttrs}><line x1="${x2}" y1="${y}" x2="${Math.min(
+          x2,
+          x1 + arrowSize,
+        )}" y2="${y}" stroke="${color}" class="read-line"/><polygon points="${x1},${y} ${
+          x1 + arrowSize
+        },${y - arrowSize} ${x1 + arrowSize},${y + arrowSize}" fill="${color}" stroke="${color}"/><line x1="${x2}" y1="${y}" x2="${x2}" y2="${
+          barY + barH
+        }" stroke="${color}" stroke-width="1" stroke-dasharray="2,2" opacity="0.4"/><text class="read-label" x="${
+          x2 - 3
+        }" y="${y + 13}" text-anchor="end" fill="${color}">${esc(
+          read.label || read.read_id,
+        )}</text></g>`;
       }
     }
 
@@ -315,6 +536,245 @@
     return `<svg class="mol-svg" viewBox="0 0 ${svgW} ${svgH}" width="100%" xmlns="http://www.w3.org/2000/svg">${svg}</svg>`;
   }
 
+  function selectorRow(config) {
+    const {
+      kind,
+      id,
+      label,
+      sub,
+      meta,
+      active,
+      depth = 0,
+      nodeType = "",
+      hasChildren = false,
+    } = config;
+    const padding = kind === "region" ? 10 + depth * 16 : 10;
+    const marker = kind === "region" ? (hasChildren ? "\u25a1" : "\u2022") : "\u2192";
+    const typeClass = nodeType ? ` ${nodeType}` : "";
+
+    return `<button class="selector-row${active ? " active" : ""}${typeClass}" data-kind="${esc(
+      kind,
+    )}" data-modality="${esc(libData.modality)}" data-id="${esc(id)}"><span class="selector-main"><span class="selector-label-line" style="padding-left:${padding}px"><span class="selector-marker">${marker}</span><span class="selector-label">${esc(
+      label,
+    )}</span></span>${
+      sub
+        ? `<span class="selector-sub" style="padding-left:${padding + 16}px">${esc(sub)}</span>`
+        : ""
+    }</span><span class="selector-meta">${esc(meta)}</span></button>`;
+  }
+
+  function selectorHtml() {
+    if (!libData) {
+      return "";
+    }
+    const selection = currentSelection();
+    const regionRows = (libData.region_nodes || []).map((region) =>
+      selectorRow({
+        kind: "region",
+        id: region.region_id,
+        label: region.name,
+        sub: `${region.region_type} \u00b7 ${region.sequence_type}`,
+        meta: region.is_leaf
+          ? bpRangeLabel(region.bp_start, region.bp_end)
+          : `${bpRangeLabel(region.bp_start, region.bp_end)} \u00b7 ${
+              region.child_region_ids.length
+            } children`,
+        active:
+          selection &&
+          selection.kind === "region" &&
+          selection.id === region.region_id,
+        depth: region.depth || 0,
+        nodeType: region.is_leaf ? "leaf" : "branch",
+        hasChildren: !region.is_leaf,
+      }),
+    );
+
+    const readRows = (libData.reads || []).map((read) =>
+      selectorRow({
+        kind: "read",
+        id: read.read_id,
+        label: read.label || read.read_id,
+        sub: `${read.strand} \u00b7 ${read.primer_id}`,
+        meta: bpRangeLabel(read.start, read.end),
+        active: selection && selection.kind === "read" && selection.id === read.read_id,
+      }),
+    );
+
+    return `<div class="selector-pane"><div class="selector-group"><div class="selector-head">regions</div><div class="selector-body">${
+      regionRows.join("") || '<div class="empty-state">No regions.</div>'
+    }</div></div><div class="selector-group"><div class="selector-head">reads</div><div class="selector-body">${
+      readRows.join("") || '<div class="empty-state">No reads.</div>'
+    }</div></div></div>`;
+  }
+
+  function modalitySummary() {
+    const rows = [
+      ["assay id", esc(libData.assay_id), true],
+      ["modality", esc(libData.modality), true],
+      ["library region", esc(libData.library_region_id), true],
+      ["seqspec version", esc(libData.seqspec_version || ""), true],
+      ["total length", esc(`${libData.total_bp} bp`), true],
+      ["region count", esc((libData.region_nodes || []).length), true],
+      ["read count", esc((libData.reads || []).length), true],
+    ];
+    const sections = [
+      detailSection(
+        "summary",
+        `<div class="selection-note">Select a region or read to inspect its metadata. Matching seqcheck results remain below.</div>${kvList(
+          rows,
+        )}`,
+      ),
+      detailTable("sequence protocols", libData.sequence_protocols, ["protocol_id", "name"]),
+      detailTable("sequence kits", libData.sequence_kits, ["kit_id", "name"]),
+      detailTable("library protocols", libData.library_protocols, ["protocol_id", "name"]),
+      detailTable("library kits", libData.library_kits, ["kit_id", "name"]),
+      detailTable("overlapping reads", overlapRows(), [
+        "left_read",
+        "right_read",
+        "bp_range",
+        "overlap_bp",
+      ]),
+    ].filter(Boolean);
+    return detailShell("modality", sections);
+  }
+
+  function regionDetails(region) {
+    const children = (libData.region_nodes || []).filter(
+      (node) => node.parent_region_id === region.region_id,
+    );
+    const visibleReads = visibleReadsForRegion(region);
+    const rows = [
+      ["region id", esc(region.region_id), true],
+      ["name", esc(region.name), false],
+      ["path", esc(pathLabel(region.path_names)), true],
+      ["region type", esc(region.region_type), true],
+      ["sequence type", esc(region.sequence_type), true],
+      ["length", esc(lengthLabel(region.min_len, region.max_len)), true],
+      ["bp range", esc(bpRangeLabel(region.bp_start, region.bp_end)), true],
+      ["leaf", esc(region.is_leaf ? "true" : "false"), true],
+      ["children", esc(region.child_region_ids.length), true],
+      ["visible in reads", esc(visibleReads.length), true],
+    ];
+    const sections = [
+      detailSection("metadata", kvList(rows)),
+      region.sequence
+        ? detailSection("sequence", `<pre class="region-seq">${esc(region.sequence)}</pre>`)
+        : "",
+      children.length
+        ? detailTable(
+            "child regions",
+            children.map((child) => ({
+              region_id: child.region_id,
+              name: child.name,
+              region_type: child.region_type,
+              sequence_type: child.sequence_type,
+              bp_range: bpRangeLabel(child.bp_start, child.bp_end),
+              length: child.len,
+            })),
+            ["region_id", "name", "region_type", "sequence_type", "bp_range", "length"],
+          )
+        : "",
+      visibleReads.length
+        ? detailTable(
+            "visible reads",
+            visibleReads.map((read) => ({
+              read_id: read.read_id,
+              name: read.label || read.read_id,
+              strand: read.strand,
+              bp_range: bpRangeLabel(read.start, read.end),
+            })),
+            ["read_id", "name", "strand", "bp_range"],
+          )
+        : "",
+      region.onlist
+        ? detailTable("onlist", [region.onlist], [
+            "file_id",
+            "filename",
+            "filetype",
+            "urltype",
+            "url",
+            "md5",
+          ])
+        : "",
+    ].filter(Boolean);
+    return detailShell(`region \u00b7 ${esc(region.name)}`, sections);
+  }
+
+  function readDetails(read) {
+    const regions = visibleRegionsForRead(read);
+    const overlaps = overlappingReads(read);
+    const rows = [
+      ["read id", esc(read.read_id), true],
+      ["name", esc(read.name), false],
+      ["strand", esc(read.strand), true],
+      ["primer id", esc(read.primer_id), true],
+      ["length", esc(lengthLabel(read.min_len, read.max_len)), true],
+      ["bp range", esc(bpRangeLabel(read.start, read.end)), true],
+      ["visible regions", esc(regions.length), true],
+      ["overlapping reads", esc(overlaps.length), true],
+    ];
+    const sections = [
+      detailSection("metadata", kvList(rows)),
+      detailTable(
+        "visible regions",
+        regions.map((region) => ({
+          region_id: region.region_id,
+          name: region.name,
+          region_type: region.region_type,
+          sequence_type: region.sequence_type,
+          bp_range: bpRangeLabel(region.bp_start, region.bp_end),
+        })),
+        ["region_id", "name", "region_type", "sequence_type", "bp_range"],
+      ),
+      detailTable(
+        "overlapping reads",
+        overlaps.map((other) => ({
+          read_id: other.read_id,
+          name: other.label || other.read_id,
+          strand: other.strand,
+          bp_range: bpRangeLabel(other.start, other.end),
+        })),
+        ["read_id", "name", "strand", "bp_range"],
+      ),
+      detailTable("files", read.files, [
+        "file_id",
+        "filename",
+        "filetype",
+        "urltype",
+        "url",
+        "md5",
+      ]),
+    ].filter(Boolean);
+    return detailShell(`read \u00b7 ${esc(read.label || read.read_id)}`, sections);
+  }
+
+  function selectionHtml() {
+    if (!libData) {
+      return "";
+    }
+    const selection = currentSelection();
+    if (!selection) {
+      return modalitySummary();
+    }
+    if (selection.kind === "region") {
+      const region = (libData.region_nodes || []).find(
+        (node) => node.region_id === selection.id,
+      );
+      if (region) {
+        return regionDetails(region);
+      }
+    }
+    if (selection.kind === "read") {
+      const read = (libData.reads || []).find(
+        (item) => item.read_id === selection.id,
+      );
+      if (read) {
+        return readDetails(read);
+      }
+    }
+    return modalitySummary();
+  }
+
   function matches(result) {
     const severity = worstSev(result.assessment || []);
     if (filterSev && severity !== filterSev) {
@@ -327,7 +787,9 @@
         ...(result.files || []),
         ...(result.reads || []),
         ...(result.regions || []),
-        ...(result.assessment || []).map((assessment) => assessment.code + " " + assessment.description),
+        ...(result.assessment || []).map(
+          (assessment) => assessment.code + " " + assessment.description,
+        ),
       ]
         .join(" ")
         .toLowerCase();
@@ -341,8 +803,11 @@
   function render(options = {}) {
     const restoreSearchFocus = Boolean(options.restoreSearchFocus);
     const restoreSearchPosition =
-      typeof options.restoreSearchPosition === "number" ? options.restoreSearchPosition : null;
+      typeof options.restoreSearchPosition === "number"
+        ? options.restoreSearchPosition
+        : null;
     const generatedAt = window.SEQCHECK_GENERATED_AT || "";
+    const selection = currentSelection();
     const sorted = results
       .map((result, index) => ({ result, index }))
       .sort((left, right) => {
@@ -406,6 +871,7 @@
           <span><span class="leg-swatch" style="background:var(--reg-random)"></span>random</span>
           <span><span class="leg-swatch outline"></span>nested region span</span>
         </div>
+        <div class="detail-layout">${selectorHtml()}<div class="detail-pane">${selectionHtml()}</div></div>
       </div>`;
     }
 
@@ -423,7 +889,7 @@
     });
     html += "</div>";
 
-    html += `<div class="search-bar"><input type="text" id="q" placeholder="Search checks, regions, descriptions\u2026" value="${esc(filterText)}"></div>`;
+    html += `<div class="search-bar"><input type="text" id="q" placeholder="Search checks, regions, descriptions\u2026" value="${escAttr(filterText)}"></div>`;
 
     const visible = sorted.filter((entry) => matches(entry.result));
     html += '<div class="result-list">';
@@ -434,9 +900,12 @@
       const result = entry.result;
       const severity = worstSev(result.assessment || []);
       const uid = "ri" + index;
-      html += `<div class="ri"><div class="ri-head" data-detail="${uid}">`;
+      const relatedClass = resultMatchesSelection(result, selection) ? " related" : "";
+      html += `<div class="ri${relatedClass}"><div class="ri-head" data-detail="${uid}">`;
       html += `<span class="ri-badge ${severity}">${sevLabel(severity)}</span>`;
-      html += `<div class="ri-body"><div class="ri-desc">${esc(naturalDesc(result))}</div><div class="ri-context">${esc(contextLine(result))}</div></div>`;
+      html += `<div class="ri-body"><div class="ri-desc">${esc(
+        naturalDesc(result),
+      )}</div><div class="ri-context">${esc(contextLine(result))}</div></div>`;
       html += `<span class="ri-arrow" id="arr-${uid}">\u25b6</span></div>`;
       html += `<div class="ri-detail" id="${uid}">`;
 
@@ -446,7 +915,11 @@
           .slice()
           .sort((left, right) => (SEV[left.type] || 3) - (SEV[right.type] || 3))
           .forEach((assessment) => {
-            html += `<div style="margin-bottom:3px"><span class="ri-badge ${assessment.type}" style="font-size:9px;padding:1px 6px;width:auto;display:inline-block">${sevLabel(assessment.type)}</span> <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">${esc(assessment.code)}</span> <span style="font-size:12px;color:var(--text-2)">${esc(assessment.description)}</span></div>`;
+            html += `<div style="margin-bottom:3px"><span class="ri-badge ${assessment.type}" style="font-size:9px;padding:1px 6px;width:auto;display:inline-block">${sevLabel(assessment.type)}</span> <span style="font-family:var(--mono);font-size:11px;color:var(--text-3)">${esc(
+              assessment.code,
+            )}</span> <span style="font-size:12px;color:var(--text-2)">${esc(
+              assessment.description,
+            )}</span></div>`;
           });
         html += "</div>";
       }
@@ -454,7 +927,7 @@
       if (result.expected && result.expected.length) {
         html += '<div class="detail-section"><div class="detail-label">Expected</div>';
         result.expected.forEach((item) => {
-          html += renderItem(item);
+          html += renderMetricItem(item);
         });
         html += "</div>";
       }
@@ -462,7 +935,7 @@
       if (result.observed && result.observed.length) {
         html += '<div class="detail-section"><div class="detail-label">Observed</div>';
         result.observed.forEach((item) => {
-          html += renderItem(item);
+          html += renderMetricItem(item);
         });
         html += "</div>";
       }
@@ -531,36 +1004,58 @@
       });
     });
 
-    const tip = document.getElementById("mol-tip");
-    if (!tip || !libData || !libData.regions) {
-      return;
-    }
+    document.querySelectorAll("[data-kind][data-modality][data-id]").forEach((element) => {
+      element.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const modality = element.getAttribute("data-modality");
+        const kind = element.getAttribute("data-kind");
+        const id = element.getAttribute("data-id");
+        const existing = selected[modality];
+        if (existing && existing.kind === kind && existing.id === id) {
+          delete selected[modality];
+        } else {
+          selected[modality] = { kind, id };
+        }
+        render();
+      });
+    });
 
-    document.querySelectorAll(".region-rect, .group-rect").forEach((element) => {
-      const regionId = element.getAttribute("data-region");
-      const regionPool = libData.region_nodes || libData.regions;
-      const region = regionPool.find((candidate) => candidate.region_id === regionId);
+    const tip = document.getElementById("mol-tip");
+    document.querySelectorAll(".region-rect[data-id], .group-rect[data-id]").forEach((element) => {
+      const regionId = element.getAttribute("data-id");
+      const region = (libData.region_nodes || []).find(
+        (item) => item.region_id === regionId,
+      );
       if (!region) {
         return;
       }
       element.addEventListener("mouseenter", () => {
-        let html = `<div class="tip-name">${esc(region.name)}</div>`;
-        html += `<div>${esc(region.region_type)} \u00b7 ${esc(region.sequence_type)} \u00b7 ${esc(region.len)} bp</div>`;
-        html += `<div class="tip-dim">${esc(region.bp_start)}-${esc(region.bp_end)} bp</div>`;
-        if (!region.is_leaf) {
-          html += `<div class="tip-dim">${esc((region.child_region_ids || []).length)} child regions</div>`;
-        }
-        if (region.sequence && region.sequence.length <= 30) {
-          html += `<div class="tip-dim">${esc(region.sequence)}</div>`;
-        } else if (region.sequence) {
-          html += `<div class="tip-dim">${esc(region.sequence.slice(0, 25))}\u2026</div>`;
-        }
-        tip.innerHTML = html;
+        tip.innerHTML = regionTooltip(region);
         tip.classList.add("show");
       });
       element.addEventListener("mousemove", (event) => {
-        tip.style.left = event.clientX + 12 + "px";
-        tip.style.top = event.clientY - 10 + "px";
+        tip.style.left = `${event.clientX + 12}px`;
+        tip.style.top = `${event.clientY - 10}px`;
+      });
+      element.addEventListener("mouseleave", () => {
+        tip.classList.remove("show");
+      });
+    });
+
+    document.querySelectorAll(".read-group[data-id]").forEach((element) => {
+      const readId = element.getAttribute("data-id");
+      const read = (libData.reads || []).find((item) => item.read_id === readId);
+      if (!read) {
+        return;
+      }
+      element.addEventListener("mouseenter", () => {
+        tip.innerHTML = readTooltip(read);
+        tip.classList.add("show");
+      });
+      element.addEventListener("mousemove", (event) => {
+        tip.style.left = `${event.clientX + 12}px`;
+        tip.style.top = `${event.clientY - 10}px`;
       });
       element.addEventListener("mouseleave", () => {
         tip.classList.remove("show");
