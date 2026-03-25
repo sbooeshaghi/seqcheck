@@ -168,6 +168,8 @@
     }
 
     const regions = libData.regions;
+    const regionNodes = libData.region_nodes || regions;
+    const groupRegions = regionNodes.filter((region) => !region.is_leaf);
     const reads = libData.reads || [];
     const totalBp = libData.total_bp || regions.reduce((sum, region) => sum + region.len, 0);
     const pad = { left: 10, right: 10 };
@@ -177,6 +179,12 @@
     const svgW = molW + pad.left + pad.right;
     const bpScale = molW / Math.max(totalBp, 1);
     const minPx = 18;
+    const groupGap = 12;
+    const groupHeight = 8;
+    const groupLevels = groupRegions.length
+      ? Math.max(...groupRegions.map((region) => region.depth || 0)) + 1
+      : 0;
+    const groupTrackTop = barY - groupLevels * groupGap - 4;
     const rects = [];
 
     let rawWidths = regions.map((region) => region.len * bpScale);
@@ -203,8 +211,11 @@
     });
 
     function bpToX(bp) {
+      if (bp <= 0) {
+        return pad.left;
+      }
       for (const region of rects) {
-        const regionStop = region.bp_start + region.len;
+        const regionStop = region.bp_end;
         if (bp <= regionStop) {
           const fraction = region.len === 0 ? 0 : (bp - region.bp_start) / region.len;
           return region.x + fraction * region.w;
@@ -238,6 +249,16 @@
     svg += `<line x1="${pad.left}" y1="${barY - 1}" x2="${currentX}" y2="${barY - 1}" stroke="var(--border)" stroke-width="0.5"/>`;
     svg += `<line x1="${pad.left}" y1="${barY + barH + 1}" x2="${currentX}" y2="${barY + barH + 1}" stroke="var(--border)" stroke-width="0.5"/>`;
 
+    groupRegions.forEach((region) => {
+      const x = bpToX(region.bp_start);
+      const width = Math.max(bpToX(region.bp_end) - x, 1);
+      const y = groupTrackTop + (region.depth || 0) * groupGap;
+      svg += `<rect class="group-rect" data-region="${esc(region.region_id)}" x="${x}" y="${y}" width="${width}" height="${groupHeight}" rx="2" />`;
+      if (width > 42) {
+        svg += `<text class="group-label" x="${x + 3}" y="${y - 2}">${esc(region.name)}</text>`;
+      }
+    });
+
     rects.forEach((region) => {
       svg += `<rect class="region-rect" data-region="${esc(region.region_id)}" x="${region.x}" y="${barY}" width="${region.w}" height="${barH}" rx="2" fill="${seqTypeColor(region.sequence_type)}" stroke="${seqTypeStroke(region.sequence_type)}" stroke-width="0.5"/>`;
     });
@@ -252,7 +273,7 @@
 
     svg += `<text class="bp-label" x="${pad.left}" y="${barY - 3}" text-anchor="middle">0</text>`;
     rects.forEach((region) => {
-      svg += `<text class="bp-label" x="${region.x + region.w}" y="${barY - 3}" text-anchor="middle">${region.bp_start + region.len}</text>`;
+      svg += `<text class="bp-label" x="${region.x + region.w}" y="${barY - 3}" text-anchor="middle">${region.bp_end}</text>`;
     });
 
     const readColors = ["#6366f1", "#059669", "#d97706", "#dc2626", "#7c3aed"];
@@ -278,7 +299,7 @@
       }
     }
 
-    let posY = barY - 14;
+    let posY = groupTrackTop - 14;
     posReads.forEach((read, index) => {
       drawRead(read, posY, true, index);
       posY -= 22;
@@ -290,7 +311,7 @@
       negY += 22;
     });
 
-    const svgH = negY + 10;
+    const svgH = Math.max(negY + 10, barY + barH + 50);
     return `<svg class="mol-svg" viewBox="0 0 ${svgW} ${svgH}" width="100%" xmlns="http://www.w3.org/2000/svg">${svg}</svg>`;
   }
 
@@ -383,6 +404,7 @@
           <span><span class="leg-swatch" style="background:var(--reg-fixed)"></span>fixed</span>
           <span><span class="leg-swatch" style="background:var(--reg-onlist)"></span>onlist</span>
           <span><span class="leg-swatch" style="background:var(--reg-random)"></span>random</span>
+          <span><span class="leg-swatch outline"></span>nested region span</span>
         </div>
       </div>`;
     }
@@ -514,15 +536,20 @@
       return;
     }
 
-    document.querySelectorAll(".region-rect").forEach((element) => {
+    document.querySelectorAll(".region-rect, .group-rect").forEach((element) => {
       const regionId = element.getAttribute("data-region");
-      const region = libData.regions.find((candidate) => candidate.region_id === regionId);
+      const regionPool = libData.region_nodes || libData.regions;
+      const region = regionPool.find((candidate) => candidate.region_id === regionId);
       if (!region) {
         return;
       }
       element.addEventListener("mouseenter", () => {
         let html = `<div class="tip-name">${esc(region.name)}</div>`;
         html += `<div>${esc(region.region_type)} \u00b7 ${esc(region.sequence_type)} \u00b7 ${esc(region.len)} bp</div>`;
+        html += `<div class="tip-dim">${esc(region.bp_start)}-${esc(region.bp_end)} bp</div>`;
+        if (!region.is_leaf) {
+          html += `<div class="tip-dim">${esc((region.child_region_ids || []).length)} child regions</div>`;
+        }
         if (region.sequence && region.sequence.length <= 30) {
           html += `<div class="tip-dim">${esc(region.sequence)}</div>`;
         } else if (region.sequence) {

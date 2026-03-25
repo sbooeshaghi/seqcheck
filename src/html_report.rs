@@ -22,8 +22,14 @@ pub struct SeqspecLibRegion {
     pub name: String,
     pub sequence_type: String,
     pub sequence: String,
+    pub min_len: i64,
+    pub max_len: i64,
     pub len: i64,
     pub bp_start: i64,
+    pub bp_end: i64,
+    pub depth: usize,
+    pub is_leaf: bool,
+    pub child_region_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +46,7 @@ pub struct SeqspecLibRead {
 pub struct SeqspecLibData {
     pub assay_name: String,
     pub modality: String,
+    pub region_nodes: Vec<SeqspecLibRegion>,
     pub regions: Vec<SeqspecLibRegion>,
     pub reads: Vec<SeqspecLibRead>,
     pub total_bp: i64,
@@ -108,9 +115,20 @@ pub fn build_seqspec_lib_data(spec: &Assay, modality: &str) -> Result<SeqspecLib
         .get_libspec(modality)
         .with_context(|| format!("modality '{}' is not present in the library_spec", modality))?;
 
+    let mut region_nodes = Vec::new();
     let mut regions = Vec::new();
     let mut spans = HashMap::new();
-    let total_bp = collect_region_layout(&libspec, 0, &mut regions, &mut spans);
+    let mut total_bp = 0;
+    for child in &libspec.regions {
+        total_bp = collect_region_layout(
+            child,
+            0,
+            total_bp,
+            &mut region_nodes,
+            &mut regions,
+            &mut spans,
+        );
+    }
 
     let reads = spec
         .get_seqspec(modality)
@@ -138,6 +156,7 @@ pub fn build_seqspec_lib_data(spec: &Assay, modality: &str) -> Result<SeqspecLib
     Ok(SeqspecLibData {
         assay_name: spec.name.clone(),
         modality: modality.to_string(),
+        region_nodes,
         regions,
         reads,
         total_bp,
@@ -192,13 +211,15 @@ fn resolve_spec_path(
 
 fn collect_region_layout(
     region: &Region,
+    depth: usize,
     bp_start: i64,
+    region_nodes: &mut Vec<SeqspecLibRegion>,
     leaves: &mut Vec<SeqspecLibRegion>,
     spans: &mut HashMap<String, RegionSpan>,
 ) -> i64 {
     let end = if region.regions.is_empty() {
         let len = region.max_len.max(0);
-        leaves.push(SeqspecLibRegion {
+        let node = SeqspecLibRegion {
             region_id: region.region_id.clone(),
             region_type: region.region_type.clone(),
             name: region.name.clone(),
@@ -208,15 +229,46 @@ fn collect_region_layout(
             } else {
                 region.sequence.clone()
             },
+            min_len: region.min_len,
+            max_len: region.max_len,
             len,
             bp_start,
-        });
+            bp_end: bp_start + len,
+            depth,
+            is_leaf: true,
+            child_region_ids: Vec::new(),
+        };
+        region_nodes.push(node.clone());
+        leaves.push(node);
         bp_start + len
     } else {
         let mut current = bp_start;
         for child in &region.regions {
-            current = collect_region_layout(child, current, leaves, spans);
+            current = collect_region_layout(child, depth + 1, current, region_nodes, leaves, spans);
         }
+        region_nodes.push(SeqspecLibRegion {
+            region_id: region.region_id.clone(),
+            region_type: region.region_type.clone(),
+            name: region.name.clone(),
+            sequence_type: region.sequence_type.clone(),
+            sequence: if region.sequence.is_empty() {
+                region.get_sequence()
+            } else {
+                region.sequence.clone()
+            },
+            min_len: region.min_len,
+            max_len: region.max_len,
+            len: current - bp_start,
+            bp_start,
+            bp_end: current,
+            depth,
+            is_leaf: false,
+            child_region_ids: region
+                .regions
+                .iter()
+                .map(|child| child.region_id.clone())
+                .collect(),
+        });
         current
     };
 
@@ -268,6 +320,8 @@ mod tests {
     use crate::report::{
         Assessment, AtomicResult, MetricData, MetricDataKind, MetricItem, ReportMeta,
     };
+    use seqspec::read::Read;
+    use seqspec::region::Region;
     use serde_json::json;
     use std::fs;
 
@@ -420,6 +474,91 @@ mod tests {
         }
     }
 
+    fn nested_spec() -> Assay {
+        let fixed_a = Region::new(
+            "fixed_a".into(),
+            "linker".into(),
+            "fixed a".into(),
+            "fixed".into(),
+            "AAA".into(),
+            3,
+            3,
+            None,
+            vec![],
+        );
+        let fixed_t = Region::new(
+            "fixed_t".into(),
+            "linker".into(),
+            "fixed t".into(),
+            "fixed".into(),
+            "T".into(),
+            1,
+            1,
+            None,
+            vec![],
+        );
+        let joined_block = Region::new(
+            "joined_block".into(),
+            "linker".into(),
+            "joined block".into(),
+            "joined".into(),
+            "AAAT".into(),
+            4,
+            4,
+            None,
+            vec![fixed_a, fixed_t],
+        );
+        let umi = Region::new(
+            "umi".into(),
+            "umi".into(),
+            "umi".into(),
+            "random".into(),
+            "XX".into(),
+            2,
+            2,
+            None,
+            vec![],
+        );
+        let libspec = Region::new(
+            "rna".into(),
+            "rna".into(),
+            "rna".into(),
+            "joined".into(),
+            "AAATXX".into(),
+            6,
+            6,
+            None,
+            vec![joined_block, umi],
+        );
+        let read = Read::new(
+            "rna_R1".into(),
+            "Read 1".into(),
+            "rna".into(),
+            "joined_block".into(),
+            2,
+            2,
+            "pos".into(),
+            vec![],
+        );
+
+        Assay::new(
+            "nested-assay".into(),
+            "Nested Assay".into(),
+            "".into(),
+            "2026-03-24".into(),
+            "nested regions".into(),
+            vec!["rna".into()],
+            "".into(),
+            vec![read],
+            vec![libspec],
+            None,
+            None,
+            None,
+            None,
+            Some("0.4.0".into()),
+        )
+    }
+
     #[test]
     fn test_render_report_html_embeds_payloads() {
         let html = render_report_html(
@@ -487,6 +626,33 @@ mod tests {
         let lib_data = build_seqspec_lib_data(&spec, "rna").unwrap();
         assert_eq!(lib_data.reads.len(), 1);
         assert_eq!(lib_data.reads[0].read_id, "bad_R2");
+    }
+
+    #[test]
+    fn test_build_seqspec_lib_data_keeps_nested_regions() {
+        let spec = nested_spec();
+        let lib_data = build_seqspec_lib_data(&spec, "rna").unwrap();
+
+        assert_eq!(lib_data.total_bp, 6);
+        assert_eq!(lib_data.regions.len(), 3);
+        assert_eq!(lib_data.regions[0].region_id, "fixed_a");
+        assert_eq!(lib_data.regions[1].region_id, "fixed_t");
+        assert_eq!(lib_data.regions[2].region_id, "umi");
+
+        let parent = lib_data
+            .region_nodes
+            .iter()
+            .find(|region| region.region_id == "joined_block")
+            .unwrap();
+        assert!(!parent.is_leaf);
+        assert_eq!(parent.bp_start, 0);
+        assert_eq!(parent.bp_end, 4);
+        assert_eq!(parent.child_region_ids, vec!["fixed_a", "fixed_t"]);
+
+        assert_eq!(lib_data.reads.len(), 1);
+        assert_eq!(lib_data.reads[0].primer_id, "joined_block");
+        assert_eq!(lib_data.reads[0].start, 4);
+        assert_eq!(lib_data.reads[0].end, 6);
     }
 
     #[test]

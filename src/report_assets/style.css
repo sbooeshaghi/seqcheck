@@ -169,13 +169,27 @@ body {
   display: block;
 }
 
-.mol-svg .region-rect {
+.mol-svg .region-rect,
+.mol-svg .group-rect {
   cursor: pointer;
   transition: opacity 0.12s;
 }
 
-.mol-svg .region-rect:hover {
+.mol-svg .region-rect:hover,
+.mol-svg .group-rect:hover {
   opacity: 0.75;
+}
+
+.mol-svg .group-rect {
+  fill: rgba(255, 255, 255, 0.8);
+  stroke: var(--text-3);
+  stroke-width: 0.85;
+}
+
+.mol-svg .group-label {
+  font-family: var(--mono);
+  font-size: 8.5px;
+  fill: var(--text-3);
 }
 
 .mol-svg .region-label {
@@ -247,6 +261,11 @@ body {
   border-radius: 2px;
   margin-right: 4px;
   vertical-align: middle;
+}
+
+.mol-legend .leg-swatch.outline {
+  background: transparent;
+  border: 1px solid var(--text-3);
 }
 
 .summary {
