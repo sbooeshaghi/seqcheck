@@ -372,11 +372,7 @@ fn resolve_candidate(spec: &Assay, modality: &str, basename: &str) -> Result<Can
 
 fn onlist_source(spec_base: &Path, onlist: &Onlist) -> String {
     if onlist.urltype == "local" {
-        let relative = if onlist.url.is_empty() {
-            PathBuf::from(&onlist.filename)
-        } else {
-            PathBuf::from(&onlist.url)
-        };
+        let relative = PathBuf::from(seqspec::utils::local_onlist_locator(onlist));
         let resolved = if relative.is_absolute() {
             relative
         } else {

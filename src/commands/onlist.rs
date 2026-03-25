@@ -35,6 +35,17 @@ struct OnlistRegionLoad {
     error: Option<String>,
 }
 
+fn onlist_error_source(spec_base: &Path, onlist: &seqspec::onlist::Onlist) -> String {
+    if onlist.urltype == "local" {
+        spec_base
+            .join(Path::new(seqspec::utils::local_onlist_locator(onlist)))
+            .display()
+            .to_string()
+    } else {
+        onlist.url.clone()
+    }
+}
+
 pub(crate) struct OnlistCollector {
     file_id: String,
     read_id: String,
@@ -100,17 +111,7 @@ impl OnlistCollector {
                             .region
                             .onlist
                             .as_ref()
-                            .map(|onlist| {
-                                if onlist.urltype == "local" {
-                                    input
-                                        .spec_base
-                                        .join(Path::new(&onlist.filename))
-                                        .display()
-                                        .to_string()
-                                } else {
-                                    onlist.filename.clone()
-                                }
-                            })
+                            .map(|onlist| onlist_error_source(&input.spec_base, onlist))
                             .unwrap_or_default(),
                         loaded_onlist: None,
                         error: Some(error.to_string()),
@@ -338,4 +339,27 @@ fn build_onlist_result(
     }
 
     result.build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::onlist_error_source;
+    use seqspec::onlist::Onlist;
+    use std::path::Path;
+
+    #[test]
+    fn test_onlist_error_source_prefers_local_url() {
+        let onlist = Onlist::new(
+            "ol".to_string(),
+            "display.txt".to_string(),
+            "txt".to_string(),
+            0,
+            "nested/whitelist.txt".to_string(),
+            "local".to_string(),
+            String::new(),
+        );
+
+        let source = onlist_error_source(Path::new("/tmp/spec-root"), &onlist);
+        assert_eq!(source, "/tmp/spec-root/nested/whitelist.txt");
+    }
 }
