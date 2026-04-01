@@ -74,6 +74,54 @@ Render that JSON as a self-contained HTML report:
 seqcheck report -i report.json -o report.html
 ```
 
+## IGVF Audit Runner
+
+The repo includes a standalone audit helper for IGVF seqspec-backed FASTQ datasets:
+
+```bash
+python scripts/igvf_audit.py --output-root tmp/igvf_audit --limit 10 --public-only
+```
+
+The runner expects:
+
+- a usable `seqcheck` binary, typically `target/debug/seqcheck` during local development
+- a usable `seqspec` command, or a sibling `../seqspec` checkout that the script can call directly
+
+Optional overrides:
+
+```bash
+export SEQCHECK_BIN=/path/to/seqcheck
+export SEQSPEC_BIN=/path/to/seqspec
+```
+
+The runner:
+
+- enumerates released, validated IGVF seqspec configuration files through the portal API
+- queries `seqspec` directly on the remote seqspec URL to get the file version, modalities, and expected FASTQ contracts
+- runs `seqcheck` directly on the remote seqspec URL and remote FASTQ URLs
+- runs `seqcheck check` per modality and stores one JSON report per run
+- writes flat `runs`, `diagnostics`, `failures`, and `lab_summary` catalogs
+
+Portal seqspec YAMLs are often old tagged `v0.3.x` files. The current remote audit path relies on the toolchain itself to handle those:
+
+- `seqspec version`, `seqspec info`, and `seqspec file` work on remote seqspec URLs
+- `seqcheck` upgrades old seqspecs internally before validating reads
+
+The runner no longer downloads or stages local spec or FASTQ inputs.
+
+For controlled-access FASTQs, define a matching `igvf` auth profile in both `seqspec` and `seqcheck`, then export the required credential env vars for those profiles.
+
+If the credentials are not ready, the runner will still audit public data, but controlled-access FASTQs will be skipped.
+
+Example:
+
+```bash
+export IGVF_ACCESS_KEY_ID=...
+export IGVF_ACCESS_KEY_SECRET=...
+```
+
+The runner passes `--auth-profile igvf` to `seqspec` and `seqcheck` only when the local profile exists and its configured env vars are set.
+
 ## Commands
 
 `seqcheck` has these subcommands:
@@ -155,6 +203,20 @@ The table below summarizes the read-based checks.
 | `hist` | `spec`, `modality`, one or more FASTQs, required `region_id`, optional `n_reads` | Extract the exact sequence slice for one named region and count exact sequence occurrences across reads. | Sampled count, covered count, short-read count, exact histogram of observed region sequences |
 
 `version` is a utility command, not a read check. It reports the `seqcheck` version, the seqspec file version, and the assay id.
+
+## Check Outcomes
+
+Not every check uses all four outcomes. The table below gives the usual meaning of each outcome for each check.
+
+| Check | What it checks | `Pass` means | `Warning` means | `Error` means | `Interpretation` means |
+| --- | --- | --- | --- | --- | --- |
+| `input_check` | Matches the supplied FASTQs to seqspec file ids and read ids. Also checks whether primer anchors are scannable. | The expected files matched uniquely. | A read points to a primer anchor that cannot be scanned as sequence. | The supplied FASTQs do not match the seqspec. | A ghost primer anchor is allowed for projection, but there is no sequence motif to scan. |
+| `length` | Compares observed read lengths to the seqspec `min_len` and `max_len`. | The sampled reads stay within the declared range. | Some reads fall outside the declared range. | Usually not emitted here. | Usually not emitted here. |
+| `coverage` | Checks whether the reads cover the projected read geometry and named regions. | The read covers the full geometry or named region. | Coverage is incomplete. | Usually not emitted here. | A shared region type appears in multiple reads, or another geometry pattern is being reported. |
+| `primer` | Checks the primer anchor named by `primer_id`. | A scannable primer is present as expected. | The primer is not scannable or the expected motif is absent. | Usually not emitted here. | The primer anchor is informative, but it cannot be treated as a sequence motif. |
+| `fixed` | Checks fixed regions such as linkers or adapters. | The fixed region matches exactly in covered reads. | The exact match fraction is low or absent. | Usually not emitted here. | The region matches only part of the time, often in one dominant orientation. |
+| `onlist` | Checks barcodes, indices, or other onlist-backed regions against their whitelist. | The covered sequences are onlist. | Some covered sequences are offlist. | The onlist resource could not be loaded. | Usually not emitted here. |
+| `random` | Summarizes the sequence distribution of random regions such as UMI, barcode, cDNA, or scaffold sequence. | Usually not the main output of this check. | Usually not emitted here. | Usually not emitted here. | Reports entropy and the most frequent observed sequences. |
 
 ## Report Format
 

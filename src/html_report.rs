@@ -1,4 +1,3 @@
-use crate::context::load_spec;
 use crate::report::{AssessmentType, Report};
 use anyhow::{Context, Result};
 use seqspec::assay::{Assay, LibKit, LibProtocol, SeqKit, SeqProtocol};
@@ -152,7 +151,7 @@ pub fn load_optional_seqspec_lib_data(
     spec_override: Option<&Path>,
 ) -> Option<SeqspecLibData> {
     let spec_path = resolve_spec_path(report_path, report, spec_override)?;
-    let assay = load_spec(&spec_path).ok()?;
+    let assay = seqspec::utils::load_spec_path(&spec_path).ok()?;
     build_seqspec_lib_data(&assay, &report.meta.modality).ok()
 }
 
@@ -258,10 +257,15 @@ fn resolve_spec_path(
         return Some(path.to_path_buf());
     }
 
-    let spec_path = report.meta.spec.clone();
-    if spec_path.as_os_str().is_empty() {
+    let spec_source = report.meta.spec.clone();
+    if spec_source.is_empty() {
         return None;
     }
+    if seqspec::utils::is_remote_source(&spec_source) {
+        return None;
+    }
+
+    let spec_path = PathBuf::from(spec_source);
     if spec_path.is_absolute() || spec_path.exists() {
         return Some(spec_path);
     }
@@ -509,7 +513,7 @@ mod tests {
             report_schema_version: "0.1.0".to_string(),
             meta: ReportMeta {
                 command: "check".to_string(),
-                spec: PathBuf::from("tests/fixtures/synthetic/spec.yaml"),
+                spec: "tests/fixtures/synthetic/spec.yaml".to_string(),
                 modality: "rna".to_string(),
                 requested_reads: 100,
             },
@@ -779,7 +783,7 @@ mod tests {
 
     #[test]
     fn test_build_seqspec_lib_data_orders_regions_and_maps_reads() {
-        let spec = load_spec(Path::new("tests/fixtures/bad_geometry/spec.yaml")).unwrap();
+        let spec = seqspec::utils::load_spec_path(Path::new("tests/fixtures/bad_geometry/spec.yaml")).unwrap();
         let lib_data = build_seqspec_lib_data(&spec, "rna").unwrap();
 
         assert_eq!(lib_data.assay_id, "bad-geometry");
@@ -812,7 +816,9 @@ mod tests {
 
     #[test]
     fn test_build_seqspec_lib_data_omits_unresolved_primer_reads() {
-        let mut spec = load_spec(Path::new("tests/fixtures/bad_geometry/spec.yaml")).unwrap();
+        let mut spec =
+            seqspec::utils::load_spec_path(Path::new("tests/fixtures/bad_geometry/spec.yaml"))
+                .unwrap();
         spec.sequence_spec[0].primer_id = "missing_primer".to_string();
 
         let lib_data = build_seqspec_lib_data(&spec, "rna").unwrap();

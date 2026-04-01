@@ -1,6 +1,7 @@
 use crate::context::ResolvedInput;
 use anyhow::{Context, Result};
 use seqspec::region::RegionCoordinate;
+use seqspec::utils::is_remote_source;
 
 pub trait FastqCollector {
     type Output;
@@ -31,8 +32,15 @@ where
     F: FnMut(usize, &str, usize) -> Result<()>,
 {
     let limit = if n_reads == 0 { usize::MAX } else { n_reads };
-    let mut records = kseq::parse_path(&input.input_path)
-        .with_context(|| format!("failed to open FASTQ {}", input.input_path.display()))?;
+    let mut records = if is_remote_source(&input.input_source) {
+        input.remote_access.with_reader(&input.input_source, |reader| {
+            kseq::parse_reader(reader)
+                .with_context(|| format!("failed to open FASTQ {}", input.input_source))
+        })?
+    } else {
+        kseq::parse_path(&input.input_path)
+            .with_context(|| format!("failed to open FASTQ {}", input.input_source))?
+    };
     let mut sampled = 0usize;
 
     while sampled < limit {

@@ -26,7 +26,7 @@ pub struct SequenceCount {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReportMeta {
     pub command: String,
-    pub spec: PathBuf,
+    pub spec: String,
     pub modality: String,
     pub requested_reads: usize,
 }
@@ -103,12 +103,12 @@ pub struct ResultBuilder {
 }
 
 impl Report {
-    pub fn new(command: &str, spec: PathBuf, modality: &str, requested_reads: usize) -> Self {
+    pub fn new(command: &str, spec: impl Into<String>, modality: &str, requested_reads: usize) -> Self {
         Self {
             report_schema_version: REPORT_SCHEMA_VERSION.to_string(),
             meta: ReportMeta {
                 command: command.to_string(),
-                spec,
+                spec: spec.into(),
                 modality: modality.to_string(),
                 requested_reads,
             },
@@ -366,7 +366,7 @@ pub fn input_check_result(input_check: &InputCheck, inputs: &[ResolvedInput]) ->
     );
     let supplied_ids = builder.observed_records(
         "supplied_input_paths",
-        "FASTQ paths supplied to the command.",
+        "FASTQ sources supplied to the command.",
         input_check
             .supplied_inputs
             .iter()
@@ -375,7 +375,7 @@ pub fn input_check_result(input_check: &InputCheck, inputs: &[ResolvedInput]) ->
     );
     let matched_ids = builder.observed_records(
         "matched_inputs",
-        "FASTQ inputs resolved to seqspec file and read ids.",
+        "FASTQ sources resolved to seqspec file and read ids.",
         input_check
             .matched_inputs
             .iter()
@@ -410,7 +410,7 @@ pub fn input_check_result(input_check: &InputCheck, inputs: &[ResolvedInput]) ->
             .iter()
             .map(|input| {
                 json!({
-                    "input_path": input.input_path,
+                    "input_path": input.input_source,
                     "file_id": input.file_id(),
                     "read_id": input.read.read_id,
                     "primer_id": input.read.primer_id,
@@ -519,7 +519,7 @@ pub fn render_report(report: &Report) -> String {
     out.push_str(&format!(
         "seqcheck {}\nspec: {}\nmodality: {}\nrequested_reads: {}\n",
         report.meta.command,
-        report.meta.spec.display(),
+        report.meta.spec,
         report.meta.modality,
         report.meta.requested_reads
     ));
@@ -825,7 +825,7 @@ mod tests {
             report_schema_version: REPORT_SCHEMA_VERSION.to_string(),
             meta: ReportMeta {
                 command: "length".to_string(),
-                spec: PathBuf::from("spec.yaml"),
+                spec: "spec.yaml".to_string(),
                 modality: "rna".to_string(),
                 requested_reads: 10,
             },
@@ -867,7 +867,7 @@ mod tests {
             report_schema_version: REPORT_SCHEMA_VERSION.to_string(),
             meta: ReportMeta {
                 command: "length".to_string(),
-                spec: PathBuf::from("spec.yaml"),
+                spec: "spec.yaml".to_string(),
                 modality: "rna".to_string(),
                 requested_reads: 10,
             },
@@ -892,9 +892,9 @@ mod tests {
                 filename: "R1.fastq.gz".to_string(),
                 url_basename: "R1.fastq.gz".to_string(),
             }],
-            supplied_inputs: vec![PathBuf::from("R1.fastq.gz")],
+            supplied_inputs: vec!["R1.fastq.gz".to_string()],
             matched_inputs: vec![MatchedInput {
-                input_path: PathBuf::from("R1.fastq.gz"),
+                input_path: "R1.fastq.gz".to_string(),
                 read_id: "rna_R1".to_string(),
                 file_id: "R1.fastq.gz".to_string(),
                 matched_by: "file_id".to_string(),

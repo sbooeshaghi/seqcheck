@@ -57,11 +57,11 @@ pub struct CommonMetricArgs {
         short = 's',
         long = "spec",
         visible_alias = "yaml",
-        help = "Path to seqspec YAML file",
+        help = "Path or URL to seqspec YAML file",
         value_name = "SPEC",
         required = true
     )]
-    pub spec: PathBuf,
+    pub spec: String,
 
     #[arg(
         short = 'n',
@@ -88,8 +88,8 @@ pub struct CommonMetricArgs {
     )]
     pub auth_profile: Option<String>,
 
-    #[arg(help = "FASTQ files to inspect", required = true, value_name = "FASTQ")]
-    pub fastqs: Vec<PathBuf>,
+    #[arg(help = "FASTQ files or URLs to inspect", required = true, value_name = "FASTQ")]
+    pub fastqs: Vec<String>,
 }
 
 pub fn run() -> Result<()> {

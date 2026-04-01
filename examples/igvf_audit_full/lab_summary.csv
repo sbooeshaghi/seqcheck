@@ -1,0 +1,18 @@
+lab,run_count,failure_count,pass_count,warning_count,error_count,interpretation_count
+(unknown),0,16,0,0,0,0
+"Ali Mortazavi, UCI",1940,14,27296,9673,0,6219
+"Ansuman Satpathy, Stanford",619,7,10796,1850,0,2164
+"Charles Gersbach, Duke",210,56,2458,434,24,678
+"Gary Hon, UT",233,1,3548,1871,0,1564
+"Hao Wu, UPenn",50,2,400,100,0,150
+"Harinder Singh, University of Pittsburgh",53,1,1026,369,0,286
+"Jason Buenrostro, Broad",2552,25,36974,14733,0,23786
+"Jay Shendure, UW",139,78,1903,196,0,698
+"Jesse Engreitz, Stanford",116,0,2339,844,0,787
+"Jimmie Ye, UCSF",569,2,10469,1365,0,2845
+"Kathrin Plath, UCLA",10,0,120,10,0,80
+"Leif Ludwig, MDC",298,2,3393,499,0,843
+"Maya Kasowski, Stanford",32,144,508,140,0,184
+"Nadav Ahituv, UCSF",1,0,13,2,0,2
+"Ryan Corces, Gladstone Institute UCSF",2907,13,52637,7220,0,11520
+"Thomas Quertermous, Stanford",68,0,1071,365,0,245

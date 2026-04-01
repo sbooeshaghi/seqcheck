@@ -31,6 +31,7 @@ pub fn run(args: &CutArgs) -> Result<()> {
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
+        args.common.n_reads,
         args.common.auth_profile.as_deref(),
     )?;
     let crate::context::LoadedInputs {

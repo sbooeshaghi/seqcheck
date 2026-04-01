@@ -1,6 +1,7 @@
+use crate::auth::RemoteAccess;
 use crate::context;
 use crate::report::OutputFormat;
-use anyhow::{bail, Result};
+use anyhow::Result;
 use clap::Args;
 use serde::Serialize;
 use std::io::Write;
@@ -15,14 +16,22 @@ pub struct VersionArgs {
         short = 's',
         long = "spec",
         visible_alias = "yaml",
-        help = "Path to seqspec YAML file",
+        help = "Path or URL to seqspec YAML file",
         value_name = "SPEC",
         required = true
     )]
-    pub spec: PathBuf,
+    pub spec: String,
 
     #[arg(long, help = "Output format", value_enum, default_value_t = OutputFormat::Text)]
     pub format: OutputFormat,
+
+    #[arg(
+        long,
+        env = "SEQCHECK_AUTH_PROFILE",
+        help = "Auth profile name for remote resources declared in the seqspec",
+        value_name = "PROFILE"
+    )]
+    pub auth_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,11 +42,8 @@ struct VersionReport {
 }
 
 pub fn run(args: &VersionArgs) -> Result<()> {
-    if !args.spec.exists() {
-        bail!("spec file does not exist: {}", args.spec.display());
-    }
-
-    let spec = context::load_spec(&args.spec)?;
+    let remote_access = RemoteAccess::load(args.auth_profile.as_deref())?;
+    let spec = context::load_spec(&args.spec, &remote_access)?;
     let report = VersionReport {
         seqcheck_version: env!("CARGO_PKG_VERSION").to_string(),
         seqspec_file_version: spec.seqspec_version.clone(),

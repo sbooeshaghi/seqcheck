@@ -35,6 +35,7 @@ pub fn run(args: &CheckArgs) -> Result<()> {
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
+        args.common.n_reads,
         args.common.auth_profile.as_deref(),
     )?;
 

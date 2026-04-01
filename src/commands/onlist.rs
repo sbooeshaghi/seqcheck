@@ -35,10 +35,12 @@ struct OnlistRegionLoad {
     error: Option<String>,
 }
 
-fn onlist_error_source(spec_base: &Path, onlist: &seqspec::onlist::Onlist) -> String {
+fn onlist_error_source(spec_base: Option<&Path>, onlist: &seqspec::onlist::Onlist) -> String {
     if onlist.urltype == "local" {
         match seqspec::utils::local_onlist_locator(onlist) {
-            Ok(locator) => spec_base.join(Path::new(locator)).display().to_string(),
+            Ok(locator) => spec_base
+                .map(|base| base.join(Path::new(locator)).display().to_string())
+                .unwrap_or_else(|| locator.to_string()),
             Err(err) => err,
         }
     } else {
@@ -59,6 +61,7 @@ pub fn run(args: &OnlistArgs) -> Result<()> {
         &args.common.spec,
         &args.common.modality,
         &args.common.fastqs,
+        args.common.n_reads,
         args.common.auth_profile.as_deref(),
     )?;
     let mut report = Report::new(
@@ -100,7 +103,7 @@ impl OnlistCollector {
         let loads = regions
             .iter()
             .map(
-                |region| match load_onlist(&input.spec_base, &region.region, remote_access) {
+                |region| match load_onlist(input.spec_base.as_deref(), &region.region, remote_access) {
                     Ok(loaded_onlist) => OnlistRegionLoad {
                         source: loaded_onlist.source.clone(),
                         loaded_onlist: Some(loaded_onlist),
@@ -111,10 +114,10 @@ impl OnlistCollector {
                             .region
                             .onlist
                             .as_ref()
-                            .map(|onlist| onlist_error_source(&input.spec_base, onlist))
+                            .map(|onlist| onlist_error_source(input.spec_base.as_deref(), onlist))
                             .unwrap_or_default(),
                         loaded_onlist: None,
-                        error: Some(error.to_string()),
+                        error: Some(format!("{error:#}")),
                     },
                 },
             )
@@ -359,7 +362,7 @@ mod tests {
             String::new(),
         );
 
-        let source = onlist_error_source(Path::new("/tmp/spec-root"), &onlist);
+        let source = onlist_error_source(Some(Path::new("/tmp/spec-root")), &onlist);
         assert_eq!(source, "/tmp/spec-root/nested/whitelist.txt");
     }
 
@@ -375,7 +378,7 @@ mod tests {
             String::new(),
         );
 
-        let source = onlist_error_source(Path::new("/tmp/spec-root"), &onlist);
+        let source = onlist_error_source(Some(Path::new("/tmp/spec-root")), &onlist);
         assert_eq!(source, "local onlist 'display.txt' has empty url");
     }
 }
