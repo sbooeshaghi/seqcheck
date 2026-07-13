@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import json
 import os
+import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -15,8 +18,10 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +29,10 @@ from typing import Any
 USER_AGENT = "seqcheck-igvf-audit/0.1"
 DEFAULT_API_ROOT = "https://api.data.igvf.org/"
 DEFAULT_PORTAL_ROOT = DEFAULT_API_ROOT
-CURRENT_SEQSPEC_VERSION = "0.4.0"
+AUDIT_SCHEMA_VERSION = "0.2.0"
+CURRENT_SEQSPEC_VERSION = "0.5.0"
+SAMPLING_METHOD = "prefix"
+ONTOLOGY_TERM_PATTERN = re.compile(r"RGN:[A-Za-z0-9_]+:[A-Za-z0-9_]+")
 
 
 @dataclass(frozen=True)
@@ -53,6 +61,10 @@ class ConfigurationRecord:
 
 @dataclass(frozen=True)
 class RunRecord:
+    study_run_id: str
+    cache_key: str
+    sampling_method: str
+    sampling_seed: int | None
     configuration_accession: str
     modality: str
     modality_count: int
@@ -80,6 +92,8 @@ class RunRecord:
 
 @dataclass(frozen=True)
 class DiagnosticRecord:
+    study_run_id: str
+    cache_key: str
     configuration_accession: str
     modality: str
     lab: str
@@ -99,10 +113,43 @@ class DiagnosticRecord:
     files: str
     reads: str
     regions: str
+    ontology_terms: str
+
+
+@dataclass(frozen=True)
+class MetricRecord:
+    study_run_id: str
+    cache_key: str
+    configuration_accession: str
+    modality: str
+    lab: str
+    submitted_by: str
+    award_component: str
+    file_set_accession: str
+    assay_term: str
+    preferred_assay_titles: str
+    aliases: str
+    raw_seqspec_version: str
+    normalized_seqspec_version: str
+    report_path: str
+    result_index: int
+    check: str
+    files: str
+    reads: str
+    regions: str
+    ontology_terms: str
+    metric_side: str
+    metric_id: str
+    metric_name: str
+    metric_description: str
+    data_kind: str
+    unit: str
+    value_json: str
 
 
 @dataclass(frozen=True)
 class FailureRecord:
+    study_run_id: str
     configuration_accession: str
     modality: str
     lab: str
@@ -123,6 +170,25 @@ class FailureRecord:
 class ToolCommand:
     argv: list[str]
     env: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ToolIdentity:
+    command: list[str]
+    version: str
+    git_commit: str
+    git_dirty: bool
+    runtime_source_sha256: str
+    executable_sha256: str
+
+
+@dataclass(frozen=True)
+class AuditContext:
+    run_id: str
+    sampling_method: str
+    sampling_seed: int | None
+    seqcheck: ToolIdentity
+    seqspec: ToolIdentity
 
 
 def parse_args() -> argparse.Namespace:
@@ -189,19 +255,33 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_PORTAL_ROOT,
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--fastqc-command",
+        default="fastqc",
+        help="FastQC executable to record for the comparison study.",
+    )
+    parser.add_argument(
+        "--fastqc-limits",
+        help="Optional FastQC limits file to identify in the study manifest.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    started_at = utc_now()
     output_root = Path(args.output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
     (output_root / "reports").mkdir(exist_ok=True)
     mpl_dir = output_root / ".mplconfig"
     mpl_dir.mkdir(exist_ok=True)
 
-    seqspec_cmd = discover_seqspec_command(Path(__file__).resolve().parents[2])
-    seqcheck_cmd = discover_seqcheck_command(Path(__file__).resolve().parents[1])
+    workspace_root = Path(__file__).resolve().parents[2]
+    seqcheck_root = Path(__file__).resolve().parents[1]
+    seqspec_cmd = discover_seqspec_command(workspace_root)
+    seqcheck_cmd = discover_seqcheck_command(seqcheck_root)
+    seqspec_identity = build_tool_identity(seqspec_cmd, workspace_root / "seqspec")
+    seqcheck_identity = build_tool_identity(seqcheck_cmd, seqcheck_root)
 
     seqspec_auth_profile = resolve_ready_auth_profile(
         args.auth_profile,
@@ -226,14 +306,32 @@ def main() -> int:
     )
 
     if args.configuration_accession:
-        allowed = {item.strip() for item in args.configuration_accession if item.strip()}
-        configurations = [
-            record for record in configurations if record.accession in allowed
-        ]
+        try:
+            configurations = select_requested_configurations(
+                configurations, args.configuration_accession
+            )
+        except ValueError as err:
+            print(f"igvf_audit: {err}", file=sys.stderr)
+            return 2
 
     configurations.sort(key=lambda record: record.accession)
     if args.limit is not None:
         configurations = configurations[: args.limit]
+    if not configurations:
+        print("igvf_audit: no configurations matched the active filters", file=sys.stderr)
+        return 2
+
+    audit_context = write_study_manifest(
+        output_root,
+        args,
+        configurations,
+        sequence_files,
+        seqcheck_identity,
+        seqspec_identity,
+        seqcheck_auth_profile,
+        seqspec_auth_profile,
+        started_at,
+    )
 
     print(
         f"auditing {len(configurations)} configuration files against {len(sequence_files)} FASTQ records",
@@ -243,6 +341,7 @@ def main() -> int:
 
     runs: list[RunRecord] = []
     diagnostics: list[DiagnosticRecord] = []
+    metrics: list[MetricRecord] = []
     failures: list[FailureRecord] = []
 
     with ThreadPoolExecutor(max_workers=max(args.workers, 1)) as pool:
@@ -259,6 +358,7 @@ def main() -> int:
                 seqcheck_auth_profile,
                 args.portal_root,
                 mpl_dir,
+                audit_context,
             ): record.accession
             for record in configurations
         }
@@ -269,7 +369,7 @@ def main() -> int:
             completed_configurations += 1
             remaining_configurations = total_configurations - completed_configurations
             try:
-                run_rows, diagnostic_rows, failure_rows = future.result()
+                run_rows, diagnostic_rows, metric_rows, failure_rows = future.result()
             except Exception as err:  # pragma: no cover - hard to force deterministically
                 print(
                     (
@@ -281,6 +381,7 @@ def main() -> int:
                 )
                 failures.append(
                     FailureRecord(
+                        study_run_id=audit_context.run_id,
                         configuration_accession=accession,
                         modality="",
                         lab="",
@@ -301,6 +402,7 @@ def main() -> int:
 
             runs.extend(run_rows)
             diagnostics.extend(diagnostic_rows)
+            metrics.extend(metric_rows)
             failures.extend(failure_rows)
             print(
                 (
@@ -322,6 +424,15 @@ def main() -> int:
             row.assessment_code,
         )
     )
+    metrics.sort(
+        key=lambda row: (
+            row.configuration_accession,
+            row.modality,
+            row.result_index,
+            row.metric_side,
+            row.metric_id,
+        )
+    )
     failures.sort(
         key=lambda row: (row.configuration_accession, row.modality, row.stage, row.reason)
     )
@@ -337,8 +448,23 @@ def main() -> int:
         output_root / "failures.jsonl",
         failures,
     )
+    write_rows(
+        output_root / "metrics.csv",
+        output_root / "metrics.jsonl",
+        metrics,
+    )
     write_lab_summary(output_root / "lab_summary.csv", runs, failures)
-    return 0
+    reconciliation = reconcile_outputs(
+        output_root,
+        audit_context,
+        configurations,
+        runs,
+        diagnostics,
+        metrics,
+        failures,
+    )
+    write_json(output_root / "validation" / "reconciliation.json", reconciliation)
+    return 0 if reconciliation["valid"] else 1
 
 
 def process_configuration(
@@ -352,9 +478,16 @@ def process_configuration(
     seqcheck_auth_profile: str | None,
     portal_root: str,
     mpl_dir: Path,
-) -> tuple[list[RunRecord], list[DiagnosticRecord], list[FailureRecord]]:
+    audit_context: AuditContext,
+) -> tuple[
+    list[RunRecord],
+    list[DiagnosticRecord],
+    list[MetricRecord],
+    list[FailureRecord],
+]:
     runs: list[RunRecord] = []
     diagnostics: list[DiagnosticRecord] = []
+    metrics: list[MetricRecord] = []
     failures: list[FailureRecord] = []
 
     linked_fastqs = [
@@ -366,6 +499,7 @@ def process_configuration(
     if not linked_fastqs:
         failures.append(
             build_failure(
+                audit_context.run_id,
                 record,
                 modality="",
                 raw_seqspec_version="",
@@ -375,7 +509,7 @@ def process_configuration(
                 message="Configuration file has no linked FASTQ sequence files.",
             )
         )
-        return runs, diagnostics, failures
+        return runs, diagnostics, metrics, failures
 
     spec_url = absolute_url(portal_root, record.href)
 
@@ -390,6 +524,7 @@ def process_configuration(
         message = stderr_message(err)
         failures.append(
             build_failure(
+                audit_context.run_id,
                 record,
                 modality="",
                 raw_seqspec_version="",
@@ -402,7 +537,7 @@ def process_configuration(
                 message=message,
             )
         )
-        return runs, diagnostics, failures
+        return runs, diagnostics, metrics, failures
 
     normalized_seqspec_version = normalize_seqspec_version(raw_seqspec_version)
 
@@ -417,6 +552,7 @@ def process_configuration(
         message = stderr_message(err)
         failures.append(
             build_failure(
+                audit_context.run_id,
                 record,
                 modality="",
                 raw_seqspec_version=raw_seqspec_version,
@@ -429,11 +565,12 @@ def process_configuration(
                 message=message,
             )
         )
-        return runs, diagnostics, failures
+        return runs, diagnostics, metrics, failures
 
     if not modalities:
         failures.append(
             build_failure(
+                audit_context.run_id,
                 record,
                 modality="",
                 raw_seqspec_version=raw_seqspec_version,
@@ -443,7 +580,7 @@ def process_configuration(
                 message="No modalities found in seqspec.",
             )
         )
-        return runs, diagnostics, failures
+        return runs, diagnostics, metrics, failures
 
     modality_count = len(modalities)
 
@@ -463,6 +600,7 @@ def process_configuration(
             message = stderr_message(err)
             failures.append(
                 build_failure(
+                    audit_context.run_id,
                     record,
                     modality=modality,
                     raw_seqspec_version=raw_seqspec_version,
@@ -481,6 +619,7 @@ def process_configuration(
         if not fastq_expectations:
             failures.append(
                 build_failure(
+                    audit_context.run_id,
                     record,
                     modality=modality,
                     raw_seqspec_version=raw_seqspec_version,
@@ -530,6 +669,7 @@ def process_configuration(
         if skip_reason is not None:
             failures.append(
                 build_failure(
+                    audit_context.run_id,
                     record,
                     modality=modality,
                     raw_seqspec_version=raw_seqspec_version,
@@ -541,12 +681,26 @@ def process_configuration(
             )
             continue
 
+        cache_key = build_report_cache_key(
+            audit_context,
+            record,
+            modality,
+            raw_seqspec_version,
+            normalized_seqspec_version,
+            spec_url,
+            expected_files,
+            modality_sequence_records,
+            fastq_urls,
+            args.n_reads,
+            controlled_needed,
+        )
+
         if report_path.exists() and not args.force:
             try:
                 report = json.loads(report_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 report = None
-            else:
+            if report is not None and report_cache_matches(report, cache_key):
                 report = annotate_report_summary(
                     report,
                     configuration_accession=record.accession,
@@ -555,12 +709,14 @@ def process_configuration(
                     expected_fastq_count=len(modality_sequence_records),
                     supplied_fastq_count=len(modality_sequence_records),
                     controlled_access=controlled_needed,
+                    audit_context=audit_context,
+                    cache_key=cache_key,
                 )
                 report_path.write_text(
                     json.dumps(report, indent=2, sort_keys=False) + "\n",
                     encoding="utf-8",
                 )
-                run_row, diagnostic_rows = flatten_report(
+                run_row, diagnostic_rows, metric_rows = flatten_report(
                     report,
                     record,
                     modality,
@@ -575,6 +731,7 @@ def process_configuration(
                 )
                 runs.append(run_row)
                 diagnostics.extend(diagnostic_rows)
+                metrics.extend(metric_rows)
                 continue
 
         try:
@@ -596,6 +753,8 @@ def process_configuration(
                 expected_fastq_count=len(modality_sequence_records),
                 supplied_fastq_count=len(modality_sequence_records),
                 controlled_access=controlled_needed,
+                audit_context=audit_context,
+                cache_key=cache_key,
             )
             report_path.write_text(
                 json.dumps(report, indent=2, sort_keys=False) + "\n",
@@ -604,6 +763,7 @@ def process_configuration(
         except subprocess.CalledProcessError as err:
             failures.append(
                 build_failure(
+                    audit_context.run_id,
                     record,
                     modality=modality,
                     raw_seqspec_version=raw_seqspec_version,
@@ -617,6 +777,7 @@ def process_configuration(
         except Exception as err:
             failures.append(
                 build_failure(
+                    audit_context.run_id,
                     record,
                     modality=modality,
                     raw_seqspec_version=raw_seqspec_version,
@@ -628,7 +789,7 @@ def process_configuration(
             )
             continue
 
-        run_row, diagnostic_rows = flatten_report(
+        run_row, diagnostic_rows, metric_rows = flatten_report(
             report,
             record,
             modality,
@@ -643,12 +804,283 @@ def process_configuration(
         )
         runs.append(run_row)
         diagnostics.extend(diagnostic_rows)
+        metrics.extend(metric_rows)
 
-    return runs, diagnostics, failures
+    return runs, diagnostics, metrics, failures
 
 
 def absolute_url(api_root: str, href_or_url: str) -> str:
     return urllib.parse.urljoin(api_root, href_or_url)
+
+
+def select_requested_configurations(
+    configurations: list[ConfigurationRecord], requested: list[str]
+) -> list[ConfigurationRecord]:
+    requested_accessions = {value.strip() for value in requested if value.strip()}
+    available = {record.accession for record in configurations}
+    missing = sorted(requested_accessions - available)
+    if missing:
+        raise ValueError(
+            "requested configuration accessions were not found under the active "
+            f"portal filters: {', '.join(missing)}"
+        )
+    return [
+        record for record in configurations if record.accession in requested_accessions
+    ]
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def sha256_json(value: Any) -> str:
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def command_output(command: list[str], env: dict[str, str] | None = None) -> str:
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    output = result.stdout.strip() or result.stderr.strip()
+    return output.splitlines()[0] if output else ""
+
+
+def git_output(repo_root: Path, *args: str) -> str:
+    if not (repo_root / ".git").exists():
+        return ""
+    return command_output(["git", "-C", str(repo_root), *args])
+
+
+def build_tool_identity(command: ToolCommand, repo_root: Path) -> ToolIdentity:
+    env = os.environ.copy()
+    env.update(command.env)
+    version = command_output(command.argv + ["--version"], env=env)
+    git_commit = git_output(repo_root, "rev-parse", "HEAD")
+    runtime_paths = [
+        value
+        for value in ("Cargo.toml", "Cargo.lock", "src")
+        if (repo_root / value).exists()
+    ]
+    status = git_output(
+        repo_root,
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+        "--",
+        *runtime_paths,
+    )
+
+    executable = Path(command.argv[0]).resolve()
+    executable_sha256 = file_sha256(executable) if executable.is_file() else ""
+
+    return ToolIdentity(
+        command=command.argv,
+        version=version,
+        git_commit=git_commit,
+        git_dirty=bool(status),
+        runtime_source_sha256=path_tree_sha256(repo_root, runtime_paths),
+        executable_sha256=executable_sha256,
+    )
+
+
+def write_study_manifest(
+    output_root: Path,
+    args: argparse.Namespace,
+    configurations: list[ConfigurationRecord],
+    sequence_files: dict[str, SequenceFileRecord],
+    seqcheck_identity: ToolIdentity,
+    seqspec_identity: ToolIdentity,
+    seqcheck_auth_profile: str | None,
+    seqspec_auth_profile: str | None,
+    started_at: str,
+) -> AuditContext:
+    linked_accessions = {
+        accession
+        for record in configurations
+        for accession in extract_accessions(record.seqspec_of)
+    }
+    linked_sequence_files = [
+        asdict(sequence_files[accession])
+        for accession in sorted(linked_accessions)
+        if accession in sequence_files
+    ]
+    stable_manifest = {
+        "audit_schema_version": AUDIT_SCHEMA_VERSION,
+        "sampling_method": SAMPLING_METHOD,
+        "query": {
+            "api_root": args.api_root,
+            "portal_root": args.portal_root,
+            "status": args.status,
+            "upload_status": args.upload_status,
+            "public_only": args.public_only,
+            "n_reads_per_fastq": args.n_reads,
+        },
+        "configurations": [asdict(record) for record in configurations],
+        "sequence_files": linked_sequence_files,
+        "auth": {
+            "requested_profile": args.auth_profile,
+            "seqcheck_profile_ready": seqcheck_auth_profile is not None,
+            "seqspec_profile_ready": seqspec_auth_profile is not None,
+        },
+        "tools": {
+            "seqcheck": asdict(seqcheck_identity),
+            "seqspec": asdict(seqspec_identity),
+            "fastqc": build_external_tool_identity(
+                args.fastqc_command,
+                Path(args.fastqc_limits).resolve() if args.fastqc_limits else None,
+            ),
+        },
+    }
+    run_identity = {
+        **stable_manifest,
+        "tools": {
+            "seqcheck": functional_tool_identity(seqcheck_identity),
+            "seqspec": functional_tool_identity(seqspec_identity),
+            "fastqc": functional_external_tool_identity(
+                stable_manifest["tools"]["fastqc"]
+            ),
+        },
+    }
+    run_id = sha256_json(run_identity)[:16]
+    context = AuditContext(
+        run_id=run_id,
+        sampling_method=SAMPLING_METHOD,
+        sampling_seed=None,
+        seqcheck=seqcheck_identity,
+        seqspec=seqspec_identity,
+    )
+    manifest = {
+        **stable_manifest,
+        "run_id": run_id,
+        "started_at": started_at,
+        "invocation": sys.argv,
+        "workers": args.workers,
+        "force": args.force,
+        "runtime": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+        },
+        "selected_configuration_count": len(configurations),
+        "linked_sequence_file_count": len(linked_sequence_files),
+    }
+    write_json(output_root / "manifests" / "study.json", manifest)
+    return context
+
+
+def build_external_tool_identity(
+    command: str, configuration_path: Path | None
+) -> dict[str, Any]:
+    resolved = shutil.which(command)
+    configuration = {
+        "mode": "custom" if configuration_path else "packaged_defaults",
+        "path": str(configuration_path) if configuration_path else "",
+        "sha256": file_sha256(configuration_path) if configuration_path else "",
+    }
+    return {
+        "command": command,
+        "resolved_path": resolved or "",
+        "available": resolved is not None,
+        "version": command_output([resolved, "--version"]) if resolved else "",
+        "executable_sha256": file_sha256(Path(resolved)) if resolved else "",
+        "configuration": configuration,
+    }
+
+
+def functional_tool_identity(identity: ToolIdentity) -> dict[str, Any]:
+    return {
+        "command": identity.command,
+        "version": identity.version,
+        "runtime_source_sha256": identity.runtime_source_sha256,
+        "executable_sha256": identity.executable_sha256,
+    }
+
+
+def functional_external_tool_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "command": identity.get("command", ""),
+        "version": identity.get("version", ""),
+        "executable_sha256": identity.get("executable_sha256", ""),
+        "configuration": identity.get("configuration", {}),
+    }
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def path_tree_sha256(root: Path, relative_paths: list[str]) -> str:
+    files = []
+    for relative_path in relative_paths:
+        path = root / relative_path
+        if path.is_file():
+            files.append(path)
+        elif path.is_dir():
+            files.extend(item for item in path.rglob("*") if item.is_file())
+
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        digest.update(str(path.relative_to(root)).encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest() if files else ""
+
+
+def build_report_cache_key(
+    audit_context: AuditContext,
+    record: ConfigurationRecord,
+    modality: str,
+    raw_seqspec_version: str,
+    normalized_seqspec_version: str,
+    spec_url: str,
+    expected_files: list[dict[str, Any]],
+    sequence_records: list[SequenceFileRecord],
+    fastq_urls: list[str],
+    n_reads: int,
+    controlled_access: bool,
+) -> str:
+    payload = {
+        "audit_schema_version": AUDIT_SCHEMA_VERSION,
+        "sampling_method": audit_context.sampling_method,
+        "sampling_seed": audit_context.sampling_seed,
+        "configuration": asdict(record),
+        "modality": modality,
+        "raw_seqspec_version": raw_seqspec_version,
+        "normalized_seqspec_version": normalized_seqspec_version,
+        "spec_url": spec_url,
+        "expected_files": expected_files,
+        "sequence_records": [asdict(item) for item in sequence_records],
+        "fastq_urls": fastq_urls,
+        "n_reads": n_reads,
+        "controlled_access": controlled_access,
+        "tools": {
+            "seqcheck": functional_tool_identity(audit_context.seqcheck),
+            "seqspec": functional_tool_identity(audit_context.seqspec),
+        },
+    }
+    return sha256_json(payload)
+
+
+def report_cache_matches(report: dict[str, Any], expected_cache_key: str) -> bool:
+    summary = report.get("audit_summary", {})
+    return (
+        summary.get("audit_schema_version") == AUDIT_SCHEMA_VERSION
+        and summary.get("cache_key") == expected_cache_key
+    )
 
 
 def fetch_configuration_records(
@@ -996,7 +1428,7 @@ def parse_seqspec_version_output(output: str) -> str:
 
 
 def normalize_seqspec_version(raw_version: str) -> str:
-    if raw_version in {"0.0.0", "0.1.0", "0.1.1", "0.2.0", "0.3.0"}:
+    if raw_version in {"0.0.0", "0.1.0", "0.1.1", "0.2.0", "0.3.0", "0.4.0"}:
         return CURRENT_SEQSPEC_VERSION
     return raw_version
 
@@ -1013,7 +1445,7 @@ def flatten_report(
     supplied_fastq_count: int,
     controlled_access: bool,
     run_status: str,
-) -> tuple[RunRecord, list[DiagnosticRecord]]:
+) -> tuple[RunRecord, list[DiagnosticRecord], list[MetricRecord]]:
     if expected_fastq_count <= 0:
         expected_fastq_count = infer_expected_fastq_count(report)
     if supplied_fastq_count <= 0:
@@ -1028,8 +1460,17 @@ def flatten_report(
     ]
     counts = count_assessment_types(assessments)
     requested_reads = int(report.get("meta", {}).get("requested_reads", 0))
+    audit_summary = report.get("audit_summary", {})
+    study_run_id = str(audit_summary.get("study_run_id", ""))
+    cache_key = str(audit_summary.get("cache_key", ""))
+    sampling_method = str(audit_summary.get("sampling_method", SAMPLING_METHOD))
+    sampling_seed = audit_summary.get("sampling_seed")
 
     run = RunRecord(
+        study_run_id=study_run_id,
+        cache_key=cache_key,
+        sampling_method=sampling_method,
+        sampling_seed=sampling_seed,
         configuration_accession=record.accession,
         modality=modality,
         modality_count=modality_count,
@@ -1058,10 +1499,14 @@ def flatten_report(
     )
 
     diagnostics = []
-    for result in report.get("results", []):
+    metric_rows = []
+    for result_index, result in enumerate(report.get("results", [])):
+        ontology_terms = ";".join(extract_ontology_terms(result))
         for assessment in result.get("assessment", []):
             diagnostics.append(
                 DiagnosticRecord(
+                    study_run_id=study_run_id,
+                    cache_key=cache_key,
                     configuration_accession=record.accession,
                     modality=modality,
                     lab=record.lab,
@@ -1081,9 +1526,62 @@ def flatten_report(
                     files=";".join(str(value) for value in result.get("files", [])),
                     reads=";".join(str(value) for value in result.get("reads", [])),
                     regions=";".join(str(value) for value in result.get("regions", [])),
+                    ontology_terms=ontology_terms,
                 )
             )
-    return run, diagnostics
+
+        for metric_side in ("expected", "observed"):
+            for metric in result.get(metric_side, []):
+                data = metric.get("data", {})
+                metric_rows.append(
+                    MetricRecord(
+                        study_run_id=study_run_id,
+                        cache_key=cache_key,
+                        configuration_accession=record.accession,
+                        modality=modality,
+                        lab=record.lab,
+                        submitted_by=record.submitted_by,
+                        award_component=record.award_component,
+                        file_set_accession=record.file_set_accession,
+                        assay_term=record.assay_term,
+                        preferred_assay_titles=";".join(record.preferred_assay_titles),
+                        aliases=";".join(record.aliases),
+                        raw_seqspec_version=raw_seqspec_version,
+                        normalized_seqspec_version=normalized_seqspec_version,
+                        report_path=str(report_path),
+                        result_index=result_index,
+                        check=str(result.get("check", "")),
+                        files=";".join(str(value) for value in result.get("files", [])),
+                        reads=";".join(str(value) for value in result.get("reads", [])),
+                        regions=";".join(str(value) for value in result.get("regions", [])),
+                        ontology_terms=ontology_terms,
+                        metric_side=metric_side,
+                        metric_id=str(metric.get("id", "")),
+                        metric_name=str(metric.get("name", "")),
+                        metric_description=str(metric.get("description", "")),
+                        data_kind=str(data.get("kind", "")),
+                        unit=str(data.get("unit") or ""),
+                        value_json=canonical_json(data.get("value")),
+                    )
+                )
+    return run, diagnostics, metric_rows
+
+
+def extract_ontology_terms(value: Any) -> list[str]:
+    terms: set[str] = set()
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+        elif isinstance(item, str):
+            terms.update(ONTOLOGY_TERM_PATTERN.findall(item))
+
+    visit(value.get("expected", []) if isinstance(value, dict) else value)
+    return sorted(terms)
 
 
 def infer_expected_fastq_count(report: dict[str, Any]) -> int:
@@ -1114,9 +1612,21 @@ def annotate_report_summary(
     expected_fastq_count: int,
     supplied_fastq_count: int,
     controlled_access: bool,
+    audit_context: AuditContext,
+    cache_key: str,
 ) -> dict[str, Any]:
     requested_reads = int(report.get("meta", {}).get("requested_reads", 0))
     report["audit_summary"] = {
+        "audit_schema_version": AUDIT_SCHEMA_VERSION,
+        "study_run_id": audit_context.run_id,
+        "cache_key": cache_key,
+        "sampling_method": audit_context.sampling_method,
+        "sampling_seed": audit_context.sampling_seed,
+        "audit_invocation": sys.argv,
+        "tools": {
+            "seqcheck": asdict(audit_context.seqcheck),
+            "seqspec": asdict(audit_context.seqspec),
+        },
         "configuration_accession": configuration_accession,
         "modality": modality,
         "modality_count": modality_count,
@@ -1141,6 +1651,7 @@ def count_assessment_types(assessments: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def build_failure(
+    study_run_id: str,
     record: ConfigurationRecord,
     modality: str,
     raw_seqspec_version: str,
@@ -1150,6 +1661,7 @@ def build_failure(
     message: str,
 ) -> FailureRecord:
     return FailureRecord(
+        study_run_id=study_run_id,
         configuration_accession=record.accession,
         modality=modality,
         lab=record.lab,
@@ -1165,6 +1677,11 @@ def build_failure(
         reason=reason,
         message=message,
     )
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def write_rows(csv_path: Path, jsonl_path: Path, rows: list[Any]) -> None:
@@ -1185,6 +1702,144 @@ def write_rows(csv_path: Path, jsonl_path: Path, rows: list[Any]) -> None:
         for row in dictionaries:
             handle.write(json.dumps(row, sort_keys=True))
             handle.write("\n")
+
+
+def reconcile_outputs(
+    output_root: Path,
+    audit_context: AuditContext,
+    configurations: list[ConfigurationRecord],
+    runs: list[RunRecord],
+    diagnostics: list[DiagnosticRecord],
+    metrics: list[MetricRecord],
+    failures: list[FailureRecord],
+) -> dict[str, Any]:
+    expected_configurations = {record.accession for record in configurations}
+    observed_configurations = {
+        row.configuration_accession for row in runs
+    } | {row.configuration_accession for row in failures}
+
+    run_keys = [(row.configuration_accession, row.modality) for row in runs]
+    duplicate_run_keys = sorted(
+        key for key, count in Counter(run_keys).items() if count > 1
+    )
+    catalog_reports = {Path(row.report_path).resolve() for row in runs}
+    actual_reports = {
+        path.resolve() for path in (output_root / "reports").glob("**/*.json")
+    }
+
+    report_parse_errors = []
+    report_identity_errors = []
+    expected_assessments_by_report: Counter[str] = Counter()
+    expected_metrics_by_report: Counter[str] = Counter()
+    for run in runs:
+        path = Path(run.report_path)
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as err:
+            report_parse_errors.append({"report_path": str(path), "error": str(err)})
+            continue
+
+        summary = report.get("audit_summary", {})
+        if (
+            summary.get("study_run_id") != audit_context.run_id
+            or summary.get("cache_key") != run.cache_key
+            or not report_cache_matches(report, run.cache_key)
+        ):
+            report_identity_errors.append(str(path))
+
+        for result in report.get("results", []):
+            report_key = str(path)
+            expected_assessments_by_report[report_key] += len(
+                result.get("assessment", [])
+            )
+            expected_metrics_by_report[report_key] += len(result.get("expected", []))
+            expected_metrics_by_report[report_key] += len(result.get("observed", []))
+
+    actual_assessments_by_report = Counter(row.report_path for row in diagnostics)
+    actual_metrics_by_report = Counter(row.report_path for row in metrics)
+    expected_assessment_count = sum(expected_assessments_by_report.values())
+    expected_metric_count = sum(expected_metrics_by_report.values())
+    known_cache_keys = {(row.report_path, row.cache_key) for row in runs}
+    flattened_identity_errors = [
+        {
+            "table": table,
+            "report_path": row.report_path,
+            "cache_key": row.cache_key,
+            "study_run_id": row.study_run_id,
+        }
+        for table, rows in (("diagnostics", diagnostics), ("metrics", metrics))
+        for row in rows
+        if row.study_run_id != audit_context.run_id
+        or (row.report_path, row.cache_key) not in known_cache_keys
+    ]
+
+    checks = {
+        "configuration_outcomes_complete": (
+            expected_configurations == observed_configurations
+        ),
+        "run_keys_unique": not duplicate_run_keys,
+        "catalog_reports_exist": not (catalog_reports - actual_reports),
+        "no_orphan_reports": not (actual_reports - catalog_reports),
+        "reports_parse": not report_parse_errors,
+        "report_identities_match": not report_identity_errors,
+        "assessment_rows_reconcile": (
+            expected_assessments_by_report == actual_assessments_by_report
+        ),
+        "metric_rows_reconcile": expected_metrics_by_report == actual_metrics_by_report,
+        "flattened_identities_match": not flattened_identity_errors,
+        "run_ids_match": (
+            all(row.study_run_id == audit_context.run_id for row in runs)
+            and all(row.study_run_id == audit_context.run_id for row in failures)
+        ),
+    }
+    return {
+        "audit_schema_version": AUDIT_SCHEMA_VERSION,
+        "study_run_id": audit_context.run_id,
+        "generated_at": utc_now(),
+        "valid": all(checks.values()),
+        "checks": checks,
+        "counts": {
+            "selected_configurations": len(expected_configurations),
+            "observed_configurations": len(observed_configurations),
+            "runs": len(runs),
+            "failures": len(failures),
+            "diagnostics": len(diagnostics),
+            "expected_assessments": expected_assessment_count,
+            "metrics": len(metrics),
+            "expected_metrics": expected_metric_count,
+            "catalog_reports": len(catalog_reports),
+            "actual_reports": len(actual_reports),
+        },
+        "details": {
+            "missing_configuration_outcomes": sorted(
+                expected_configurations - observed_configurations
+            ),
+            "duplicate_run_keys": [list(key) for key in duplicate_run_keys],
+            "missing_reports": sorted(str(path) for path in catalog_reports - actual_reports),
+            "orphan_reports": sorted(str(path) for path in actual_reports - catalog_reports),
+            "report_parse_errors": report_parse_errors,
+            "report_identity_errors": report_identity_errors,
+            "flattened_identity_errors": flattened_identity_errors,
+            "assessment_count_mismatches": counter_differences(
+                expected_assessments_by_report, actual_assessments_by_report
+            ),
+            "metric_count_mismatches": counter_differences(
+                expected_metrics_by_report, actual_metrics_by_report
+            ),
+        },
+    }
+
+
+def counter_differences(expected: Counter[str], observed: Counter[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "report_path": key,
+            "expected": expected[key],
+            "observed": observed[key],
+        }
+        for key in sorted(set(expected) | set(observed))
+        if expected[key] != observed[key]
+    ]
 
 
 def write_lab_summary(

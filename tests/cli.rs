@@ -211,6 +211,37 @@ fn test_check_json_accepts_ontology_region_type_lists() {
 }
 
 #[test]
+fn test_check_legacy_and_ontology_specs_have_result_parity() {
+    let fastq = "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq";
+    let legacy = parse_json(&[
+        "check",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/synthetic/spec.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        fastq,
+    ]);
+    let ontology = parse_json(&[
+        "check",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/synthetic/spec_0_5.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        fastq,
+    ]);
+
+    assert_eq!(legacy["results"], ontology["results"]);
+}
+
+#[test]
 fn test_fixed_text_synthetic_golden() {
     let observed = run_success(&[
         "fixed",
@@ -256,7 +287,7 @@ assessment:
 expected:
   - expected_sequence: TT bases
   - expected_coordinates:
-    - name=Linker region_type=linker start=4 stop=6
+    - name=Linker region_type=["RGN:technical:linker"] start=4 stop=6
   - primary_orientation: forward
 observed:
   - sampled_count: 5 count
@@ -444,18 +475,14 @@ fn test_coverage_surfaces_duplicate_assignment_as_results() {
             && result["regions"].as_array().unwrap().is_empty()
             && has_assessment(result, "shared_region_type_visible_in_multiple_reads")
             && metric_value(result, "expected", "projected_coordinates_by_read")[0]["region_type"]
-                == "barcode"
+                == serde_json::json!(["RGN:partition:cell"])
     });
     assert!(has_assessment(
         shared_region_type,
         "shared_region_type_visible_in_multiple_reads"
     ));
     assert_eq!(
-        metric_value(
-            shared_region_type,
-            "expected",
-            "shared_region_type_term"
-        ),
+        metric_value(shared_region_type, "expected", "shared_region_type_term"),
         "RGN:partition:cell"
     );
 }
@@ -488,11 +515,7 @@ fn test_coverage_groups_ontology_terms_and_preserves_multiple_roles() {
         .unwrap()
         .contains("RGN:partition:cell"));
     assert_eq!(
-        metric_value(
-            shared_cell_partition,
-            "expected",
-            "shared_region_type_term"
-        ),
+        metric_value(shared_cell_partition, "expected", "shared_region_type_term"),
         "RGN:partition:cell"
     );
 

@@ -140,6 +140,13 @@ impl ResolvedInput {
 }
 
 pub fn load_spec(spec_source: &str, remote_access: &RemoteAccess) -> Result<Assay> {
+    Ok(normalize_spec_version(load_spec_raw(
+        spec_source,
+        remote_access,
+    )?))
+}
+
+pub fn load_spec_raw(spec_source: &str, remote_access: &RemoteAccess) -> Result<Assay> {
     let spec = if seqspec::utils::is_remote_source(spec_source) {
         remote_access.with_reader(spec_source, |mut reader| {
             let mut data = Vec::new();
@@ -153,7 +160,7 @@ pub fn load_spec(spec_source: &str, remote_access: &RemoteAccess) -> Result<Assa
         }
         seqspec::utils::load_spec_path(spec_path)?
     };
-    Ok(normalize_spec_version(spec))
+    Ok(spec)
 }
 
 fn normalize_spec_version(spec: Assay) -> Assay {
@@ -163,7 +170,7 @@ fn normalize_spec_version(spec: Assay) -> Assay {
         .unwrap_or_else(|| "0.0.0".to_string());
 
     match version.as_str() {
-        "0.0.0" | "0.1.0" | "0.1.1" | "0.2.0" | "0.3.0" => {
+        "0.0.0" | "0.1.0" | "0.1.1" | "0.2.0" | "0.3.0" | "0.4.0" => {
             seqspec::seqspec_upgrade::seqspec_upgrade(spec, &version)
         }
         _ => spec,
@@ -317,11 +324,7 @@ fn input_source_basename(input_source: &str) -> Result<String> {
             .split_once('#')
             .map(|(head, _)| head)
             .unwrap_or(input_source);
-        let basename = trimmed
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .to_string();
+        let basename = trimmed.rsplit('/').next().unwrap_or_default().to_string();
         if basename.is_empty() {
             bail!("remote FASTQ URL has no basename: {}", input_source);
         }
@@ -658,7 +661,11 @@ fn try_parse_delimited_onlist(region: &Region, text: &str) -> Result<Option<Hash
 
     let rows = candidate_lines
         .iter()
-        .map(|line| line.split(delimiter).map(normalize_cell).collect::<Vec<_>>())
+        .map(|line| {
+            line.split(delimiter)
+                .map(normalize_cell)
+                .collect::<Vec<_>>()
+        })
         .collect::<Vec<_>>();
     let has_header = detect_header(region, &rows);
     let header = has_header.then(|| rows[0].clone());
@@ -766,9 +773,10 @@ fn select_onlist_columns(
         let mut best_score = i32::MIN;
         let mut best_columns = Vec::new();
         for idx in &candidate_columns {
-            let score = region_header_score(region, header.get(*idx).map(|s| s.as_str()).unwrap_or(""))
-                * 1000
-                + i32::try_from(column_match_counts[*idx]).unwrap_or_default();
+            let score =
+                region_header_score(region, header.get(*idx).map(|s| s.as_str()).unwrap_or(""))
+                    * 1000
+                    + i32::try_from(column_match_counts[*idx]).unwrap_or_default();
             if score > best_score {
                 best_score = score;
                 best_columns.clear();
@@ -777,8 +785,9 @@ fn select_onlist_columns(
                 best_columns.push(*idx);
             }
         }
-        if best_score > i32::try_from(column_match_counts[*candidate_columns.first().unwrap()])
-            .unwrap_or_default()
+        if best_score
+            > i32::try_from(column_match_counts[*candidate_columns.first().unwrap()])
+                .unwrap_or_default()
         {
             return best_columns;
         }
@@ -853,9 +862,7 @@ fn region_header_score(region: &Region, header: &str) -> i32 {
 fn tokenize_region_metadata(region: &Region) -> Vec<String> {
     format!(
         "{} {} {}",
-        region.region_id,
-        region.name,
-        region.region_type
+        region.region_id, region.name, region.region_type
     )
     .split(|c: char| !c.is_ascii_alphanumeric())
     .filter(|token| !token.is_empty())
@@ -1140,6 +1147,16 @@ mod tests {
     }
 
     #[test]
+    fn test_normalize_spec_upgrades_0_4_0_region_types() {
+        let loaded = normalize_spec_version(sample_assay());
+
+        assert_eq!(loaded.seqspec_version.as_deref(), Some("0.5.0"));
+        assert!(primer_region(&loaded, "barcode")
+            .region_type
+            .has_term("RGN:partition:cell"));
+    }
+
+    #[test]
     fn test_normalize_onlist_reader_handles_gzip_stream() {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(b"AAAA\t1\nCCCC\t2\n").unwrap();
@@ -1312,9 +1329,7 @@ SI-A2,GTGGATCAAA,GCCAACCCTG,CAGGGTTGGC\n";
 
         let spec_bytes = sample_assay().to_bytes().unwrap();
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(b"@r1\nAAAACCCC\n+\nFFFFFFFF\n")
-            .unwrap();
+        encoder.write_all(b"@r1\nAAAACCCC\n+\nFFFFFFFF\n").unwrap();
         let fastq_bytes = encoder.finish().unwrap();
 
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1351,7 +1366,8 @@ SI-A2,GTGGATCAAA,GCCAACCCTG,CAGGGTTGGC\n";
         assert_eq!(loaded.inputs.len(), 1);
         assert_eq!(loaded.inputs[0].input_source, fastq_url);
         assert!(loaded.inputs[0].spec_base.is_none());
-        let sampled = crate::scan::scan_fastq_records(&loaded.inputs[0], 1, |_, _, _| Ok(())).unwrap();
+        let sampled =
+            crate::scan::scan_fastq_records(&loaded.inputs[0], 1, |_, _, _| Ok(())).unwrap();
         assert_eq!(sampled, 1);
 
         server.join().unwrap();

@@ -103,7 +103,12 @@ pub struct ResultBuilder {
 }
 
 impl Report {
-    pub fn new(command: &str, spec: impl Into<String>, modality: &str, requested_reads: usize) -> Self {
+    pub fn new(
+        command: &str,
+        spec: impl Into<String>,
+        modality: &str,
+        requested_reads: usize,
+    ) -> Self {
         Self {
             report_schema_version: REPORT_SCHEMA_VERSION.to_string(),
             meta: ReportMeta {
@@ -518,10 +523,7 @@ pub fn render_report(report: &Report) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "seqcheck {}\nspec: {}\nmodality: {}\nrequested_reads: {}\n",
-        report.meta.command,
-        report.meta.spec,
-        report.meta.modality,
-        report.meta.requested_reads
+        report.meta.command, report.meta.spec, report.meta.modality, report.meta.requested_reads
     ));
 
     for result in &report.results {

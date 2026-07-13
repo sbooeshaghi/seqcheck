@@ -102,8 +102,8 @@ impl OnlistCollector {
         let regions = filter_regions_by_sequence_type(input, "onlist");
         let loads = regions
             .iter()
-            .map(
-                |region| match load_onlist(input.spec_base.as_deref(), &region.region, remote_access) {
+            .map(|region| {
+                match load_onlist(input.spec_base.as_deref(), &region.region, remote_access) {
                     Ok(loaded_onlist) => OnlistRegionLoad {
                         source: loaded_onlist.source.clone(),
                         loaded_onlist: Some(loaded_onlist),
@@ -119,8 +119,8 @@ impl OnlistCollector {
                         loaded_onlist: None,
                         error: Some(format!("{error:#}")),
                     },
-                },
-            )
+                }
+            })
             .collect::<Vec<_>>();
 
         Ok(Self {

@@ -1,4 +1,6 @@
 /target
+__pycache__/
+.pytest_cache/
 .DS_Store
 /archive/
 /spec.yaml

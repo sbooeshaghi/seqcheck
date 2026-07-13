@@ -784,7 +784,9 @@ mod tests {
 
     #[test]
     fn test_build_seqspec_lib_data_orders_regions_and_maps_reads() {
-        let spec = seqspec::utils::load_spec_path(Path::new("tests/fixtures/bad_geometry/spec.yaml")).unwrap();
+        let spec =
+            seqspec::utils::load_spec_path(Path::new("tests/fixtures/bad_geometry/spec.yaml"))
+                .unwrap();
         let lib_data = build_seqspec_lib_data(&spec, "rna").unwrap();
 
         assert_eq!(lib_data.assay_id, "bad-geometry");

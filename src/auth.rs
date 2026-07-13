@@ -308,10 +308,7 @@ impl RemoteAccess {
 }
 
 fn summarize_http_body(body: &str) -> String {
-    let compact = body
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
     let limit = 200;
     if compact.len() <= limit {
         compact
@@ -483,7 +480,9 @@ mod tests {
 
     #[test]
     fn test_registry_loads_profiles_from_env_path() {
-        let _guard = test_env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let root = env::temp_dir().join(format!(
             "seqcheck-auth-{}-{}",
             std::process::id(),
@@ -516,7 +515,9 @@ password_env = "IGVF_ACCESS_KEY_SECRET"
 
     #[test]
     fn test_resolve_summary_matches_host() {
-        let _guard = test_env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let root = env::temp_dir().join(format!(
             "seqcheck-auth-{}-{}",
             std::process::id(),
@@ -552,7 +553,9 @@ password_env = "IGVF_ACCESS_KEY_SECRET"
 
     #[test]
     fn test_remote_access_sends_basic_auth() {
-        let _guard = test_env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let root = env::temp_dir().join(format!(
             "seqcheck-auth-{}-{}",
             std::process::id(),
@@ -619,7 +622,9 @@ password_env = "SEQCHECK_TEST_PASS"
 
     #[test]
     fn test_remote_access_auto_profile_falls_back_to_anonymous_when_env_missing() {
-        let _guard = test_env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let root = env::temp_dir().join(format!(
             "seqcheck-auth-{}-{}",
             std::process::id(),
@@ -679,9 +684,7 @@ password_env = "SEQCHECK_TEST_PASS"
 
     #[test]
     fn test_summarize_http_body_compacts_and_truncates() {
-        let summary = summarize_http_body(
-            "one   two\nthree ".repeat(80).as_str(),
-        );
+        let summary = summarize_http_body("one   two\nthree ".repeat(80).as_str());
 
         assert!(summary.starts_with("one two three"));
         assert!(summary.ends_with("..."));
@@ -690,7 +693,9 @@ password_env = "SEQCHECK_TEST_PASS"
 
     #[test]
     fn test_init_profile_creates_config_file() {
-        let _guard = test_env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let root = env::temp_dir().join(format!(
             "seqcheck-auth-{}-{}",
             std::process::id(),
@@ -740,7 +745,9 @@ password_env = "SEQCHECK_TEST_PASS"
 
     #[test]
     fn test_init_profile_updates_existing_profile() {
-        let _guard = test_env_lock().lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = test_env_lock()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
         let root = env::temp_dir().join(format!(
             "seqcheck-auth-{}-{}",
             std::process::id(),

@@ -100,7 +100,10 @@ The runner:
 - queries `seqspec` directly on the remote seqspec URL to get the file version, modalities, and expected FASTQ contracts
 - runs `seqcheck` directly on the remote seqspec URL and remote FASTQ URLs
 - runs `seqcheck check` per modality and stores one JSON report per run
-- writes flat `runs`, `diagnostics`, `failures`, and `lab_summary` catalogs
+- writes flat `runs`, `diagnostics`, `metrics`, `failures`, and `lab_summary` catalogs
+- records seqcheck, seqspec, and FastQC identities in a study manifest
+- keys cached reports by tool, input, sampling, and report-schema identity
+- validates that reports and flat catalogs reconcile before returning success
 
 Portal seqspec YAMLs are often old tagged `v0.3.x` files. The current remote audit path relies on the toolchain itself to handle those:
 
@@ -121,6 +124,27 @@ export IGVF_ACCESS_KEY_SECRET=...
 ```
 
 The runner passes `--auth-profile igvf` to `seqspec` and `seqcheck` only when the local profile exists and its configured env vars are set.
+
+## Study FASTQ Sampler
+
+The study sampler creates bounded prefix or seeded reservoir samples without
+changing FASTQ records. Reservoir sampling reads the complete source stream but
+retains only the requested records in memory.
+
+```bash
+python scripts/sample_fastq.py \
+  --input R1.fastq.gz \
+  --input R2.fastq.gz \
+  --output-root tmp/sample-seed-17 \
+  --method reservoir \
+  --n-reads 10000 \
+  --seed 17 \
+  --synchronize-mates
+```
+
+`--synchronize-mates` checks normalized read names in lockstep and uses one
+shared reservoir for every input. The output manifest records source metadata,
+sampling settings, sampler identity, record counts, and output checksums.
 
 ## Commands
 

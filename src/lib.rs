@@ -88,7 +88,11 @@ pub struct CommonMetricArgs {
     )]
     pub auth_profile: Option<String>,
 
-    #[arg(help = "FASTQ files or URLs to inspect", required = true, value_name = "FASTQ")]
+    #[arg(
+        help = "FASTQ files or URLs to inspect",
+        required = true,
+        value_name = "FASTQ"
+    )]
     pub fastqs: Vec<String>,
 }
 

@@ -43,7 +43,7 @@ struct VersionReport {
 
 pub fn run(args: &VersionArgs) -> Result<()> {
     let remote_access = RemoteAccess::load(args.auth_profile.as_deref())?;
-    let spec = context::load_spec(&args.spec, &remote_access)?;
+    let spec = context::load_spec_raw(&args.spec, &remote_access)?;
     let report = VersionReport {
         seqcheck_version: env!("CARGO_PKG_VERSION").to_string(),
         seqspec_file_version: spec.seqspec_version.clone(),
