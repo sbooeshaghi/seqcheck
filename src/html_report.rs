@@ -273,6 +273,7 @@ fn resolve_spec_path(
     report_path.parent().map(|parent| parent.join(spec_path))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_region_layout(
     region: &Region,
     depth: usize,
@@ -292,7 +293,7 @@ fn collect_region_layout(
         let len = region.max_len.max(0);
         let node = SeqspecLibRegion {
             region_id: region.region_id.clone(),
-            region_type: region.region_type.clone(),
+            region_type: region.region_type.display(),
             name: region.name.clone(),
             sequence_type: region.sequence_type.clone(),
             sequence: if region.sequence.is_empty() {
@@ -333,7 +334,7 @@ fn collect_region_layout(
         }
         region_nodes.push(SeqspecLibRegion {
             region_id: region.region_id.clone(),
-            region_type: region.region_type.clone(),
+            region_type: region.region_type.display(),
             name: region.name.clone(),
             sequence_type: region.sequence_type.clone(),
             sequence: if region.sequence.is_empty() {

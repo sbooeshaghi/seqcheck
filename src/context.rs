@@ -3,6 +3,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
 use seqspec::assay::Assay;
 use seqspec::file::File;
+use seqspec::models::region_type::RegionTypeValue;
 use seqspec::onlist::Onlist;
 use seqspec::read::Read;
 use seqspec::region::{Region, RegionCoordinate};
@@ -15,7 +16,7 @@ use std::path::{Path, PathBuf};
 pub struct ExpectedRegion {
     pub region_id: String,
     pub name: String,
-    pub region_type: String,
+    pub region_type: RegionTypeValue,
     pub sequence_type: String,
     pub start: usize,
     pub stop: usize,
@@ -798,52 +799,46 @@ fn region_header_score(region: &Region, header: &str) -> i32 {
     let header = header.to_ascii_lowercase();
     let mut score = 0;
 
-    match region.region_type.as_str() {
-        "index5" => {
-            if header.contains("i5") || header.contains("index5") || header.contains("index 5") {
-                score += 8;
-            }
-            if header.contains("index2") {
-                score += 6;
-            }
-            if header.contains("i7") {
-                score -= 8;
-            }
+    if region.region_type.is_index5() {
+        if header.contains("i5") || header.contains("index5") || header.contains("index 5") {
+            score += 8;
         }
-        "index7" => {
-            if header.contains("i7") || header.contains("index7") || header.contains("index 7") {
-                score += 8;
-            }
-            if header.contains("index(") {
-                score += 2;
-            }
-            if header.contains("i5") || header.contains("index2") {
-                score -= 8;
-            }
+        if header.contains("index2") {
+            score += 6;
         }
-        "barcode" => {
-            if header.contains("barcode") {
-                score += 8;
-            }
-            if header.contains("cell") || header.contains("cb") {
-                score += 4;
-            }
+        if header.contains("i7") {
+            score -= 8;
         }
-        "umi" => {
-            if header.contains("umi") {
-                score += 8;
-            }
+    }
+    if region.region_type.is_index7() {
+        if header.contains("i7") || header.contains("index7") || header.contains("index 7") {
+            score += 8;
         }
-        "crispr" => {
-            if header.contains("spacer")
-                || header.contains("guide")
-                || header.contains("grna")
-                || header.contains("sgrna")
-            {
-                score += 8;
-            }
+        if header.contains("index(") {
+            score += 2;
         }
-        _ => {}
+        if header.contains("i5") || header.contains("index2") {
+            score -= 8;
+        }
+    }
+    if region.region_type.is_cell_barcode() {
+        if header.contains("barcode") {
+            score += 8;
+        }
+        if header.contains("cell") || header.contains("cb") {
+            score += 4;
+        }
+    }
+    if region.region_type.is_molecule_barcode() && header.contains("umi") {
+        score += 8;
+    }
+    if region.region_type.has_term("RGN:measure:guide")
+        && (header.contains("spacer")
+            || header.contains("guide")
+            || header.contains("grna")
+            || header.contains("sgrna"))
+    {
+        score += 8;
     }
 
     for token in tokenize_region_metadata(region) {
@@ -1122,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_spec_upgrades_0_3_0_to_0_4_0() {
+    fn test_load_spec_upgrades_0_3_0_to_current_version() {
         let mut assay = sample_assay();
         assay.seqspec_version = Some("0.3.0".to_string());
 
@@ -1139,7 +1134,7 @@ mod tests {
         std::fs::write(&path, assay.to_bytes().unwrap()).unwrap();
 
         let loaded = load_spec(path.to_str().unwrap(), &RemoteAccess::anonymous()).unwrap();
-        assert_eq!(loaded.seqspec_version.as_deref(), Some("0.4.0"));
+        assert_eq!(loaded.seqspec_version.as_deref(), Some("0.5.0"));
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -1159,9 +1154,12 @@ mod tests {
 
     #[test]
     fn test_normalize_onlist_text_parses_illumina_dual_index_csv_for_index7() {
-        let region = Region::new(
+        let region = Region::new_with_region_type_value(
             "idx7".to_string(),
-            "index7".to_string(),
+            RegionTypeValue::from(vec![
+                "RGN:partition:sample".to_string(),
+                "RGN:technical:index7".to_string(),
+            ]),
             "Index 7".to_string(),
             "onlist".to_string(),
             String::new(),
@@ -1189,6 +1187,38 @@ SI-A2,GTGGATCAAA,GCCAACCCTG,CAGGGTTGGC\n";
         assert!(observed.contains("CCTGTCAGGG"));
         assert!(observed.contains("GTGGATCAAA"));
         assert_eq!(observed.len(), 2);
+    }
+
+    #[test]
+    fn test_region_header_score_uses_ontology_semantics() {
+        let cell_barcode = Region::new_with_region_type_value(
+            "cell_id".to_string(),
+            RegionTypeValue::from(vec!["RGN:partition:cell".to_string()]),
+            "Cell identifier".to_string(),
+            "onlist".to_string(),
+            String::new(),
+            16,
+            16,
+            None,
+            vec![],
+        );
+        let guide = Region::new_with_region_type_value(
+            "feature".to_string(),
+            RegionTypeValue::from(vec![
+                "RGN:measure:guide".to_string(),
+                "RGN:classify:perturbation".to_string(),
+            ]),
+            "Perturbation feature".to_string(),
+            "onlist".to_string(),
+            String::new(),
+            20,
+            20,
+            None,
+            vec![],
+        );
+
+        assert!(region_header_score(&cell_barcode, "cell_barcode") >= 8);
+        assert!(region_header_score(&guide, "sgRNA spacer") >= 8);
     }
 
     #[test]
@@ -1312,7 +1342,9 @@ SI-A2,GTGGATCAAA,GCCAACCCTG,CAGGGTTGGC\n";
 
         let spec_url = format!("http://{}/spec.yaml", addr);
         let fastq_url = format!("http://{}/R1.fastq.gz", addr);
-        let loaded = load_resolved_inputs(&spec_url, "rna", &[fastq_url.clone()], 1, None).unwrap();
+        let loaded =
+            load_resolved_inputs(&spec_url, "rna", std::slice::from_ref(&fastq_url), 1, None)
+                .unwrap();
 
         assert_eq!(loaded.spec_source, spec_url);
         assert_eq!(loaded.input_check.supplied_inputs, vec![fastq_url.clone()]);

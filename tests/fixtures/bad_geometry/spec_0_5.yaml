@@ -1,0 +1,123 @@
+seqspec_version: 0.5.0
+assay_id: bad-geometry-ontology
+name: Bad Geometry Ontology Fixture
+doi: https://doi.org/10.0000/bad-geometry
+date: 19 March 2026
+description: Duplicate assignments with ontology region types for seqcheck tests
+modalities:
+  - rna
+lib_struct: ""
+sequence_protocol: Custom
+sequence_kit: Custom
+library_protocol: Custom
+library_kit: Custom
+sequence_spec:
+  - read_id: bad_R1
+    name: Bad Read 1
+    modality: rna
+    primer_id: primer1
+    min_len: 6
+    max_len: 6
+    strand: pos
+    files:
+      - file_id: bad_R1.fastq
+        filename: bad_R1.fastq
+        filetype: fastq
+        filesize: 0
+        url: fastqs/bad_R1.fastq
+        urltype: local
+        md5: 037b2ced03a5ecc3a26401de6d2bac48
+  - read_id: bad_R2
+    name: Bad Read 2
+    modality: rna
+    primer_id: primer2
+    min_len: 14
+    max_len: 14
+    strand: neg
+    files:
+      - file_id: bad_R2.fastq
+        filename: bad_R2.fastq
+        filetype: fastq
+        filesize: 0
+        url: fastqs/bad_R2.fastq
+        urltype: local
+        md5: b4c48a841ba26fe11988fb813dbf6ccc
+library_spec:
+  - region_id: rna
+    region_type:
+      - RGN:unknown:unclassified
+    name: Bad Geometry RNA
+    sequence_type: joined
+    sequence: AAAANNNNXXCCCCXXXXGGGG
+    min_len: 22
+    max_len: 22
+    onlist: null
+    regions:
+      - region_id: primer1
+        region_type:
+          - RGN:technical:primer
+        name: Primer 1
+        sequence_type: fixed
+        sequence: AAAA
+        min_len: 4
+        max_len: 4
+        onlist: null
+        regions: []
+      - region_id: barcode
+        region_type:
+          - RGN:partition:cell
+        name: Barcode
+        sequence_type: onlist
+        sequence: NNNN
+        min_len: 4
+        max_len: 4
+        onlist:
+          file_id: bad_barcodes.txt
+          filename: bad_barcodes.txt
+          filetype: txt
+          filesize: 0
+          url: onlists/bad_barcodes.txt
+          urltype: local
+          md5: 3c6252ba8678b05a6f42ead5a76bdbd2
+        regions: []
+      - region_id: umi
+        region_type:
+          - RGN:partition:molecule
+        name: UMI
+        sequence_type: random
+        sequence: XX
+        min_len: 2
+        max_len: 2
+        onlist: null
+        regions: []
+      - region_id: spacer
+        region_type:
+          - RGN:technical:linker
+        name: Spacer
+        sequence_type: fixed
+        sequence: CCCC
+        min_len: 4
+        max_len: 4
+        onlist: null
+        regions: []
+      - region_id: feature
+        region_type:
+          - RGN:measure:guide
+          - RGN:classify:perturbation
+        name: Feature
+        sequence_type: random
+        sequence: XXXX
+        min_len: 4
+        max_len: 4
+        onlist: null
+        regions: []
+      - region_id: primer2
+        region_type:
+          - RGN:technical:primer
+        name: Primer 2
+        sequence_type: fixed
+        sequence: GGGG
+        min_len: 4
+        max_len: 4
+        onlist: null
+        regions: []

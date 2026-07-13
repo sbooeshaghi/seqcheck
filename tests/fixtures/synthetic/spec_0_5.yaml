@@ -1,0 +1,97 @@
+seqspec_version: 0.5.0
+assay_id: synthetic-ontology
+name: Synthetic Seqcheck Ontology Fixture
+doi: https://doi.org/10.0000/synthetic
+date: 19 March 2026
+description: Small synthetic assay with ontology region types for seqcheck tests
+modalities:
+  - rna
+lib_struct: ""
+sequence_protocol: Custom
+sequence_kit: Custom
+library_protocol: Custom
+library_kit: Custom
+sequence_spec:
+  - read_id: synthetic_R1
+    name: Synthetic Read 1
+    modality: rna
+    primer_id: primer
+    min_len: 12
+    max_len: 12
+    strand: pos
+    files:
+      - file_id: synthetic_R1.fastq
+        filename: synthetic_R1.fastq
+        filetype: fastq
+        filesize: 0
+        url: fastqs/synthetic_R1.fastq
+        urltype: local
+        md5: 6c841137f8149b386467fef285d74179
+library_spec:
+  - region_id: rna
+    region_type:
+      - RGN:unknown:unclassified
+    name: Synthetic RNA
+    sequence_type: joined
+    sequence: AAAANNNNTTXXXXXX
+    min_len: 16
+    max_len: 16
+    onlist: null
+    regions:
+      - region_id: primer
+        region_type:
+          - RGN:technical:primer
+        name: Primer
+        sequence_type: fixed
+        sequence: AAAA
+        min_len: 4
+        max_len: 4
+        onlist: null
+        regions: []
+      - region_id: barcode
+        region_type:
+          - RGN:partition:cell
+        name: Barcode
+        sequence_type: onlist
+        sequence: NNNN
+        min_len: 4
+        max_len: 4
+        onlist:
+          file_id: synthetic_barcodes.txt
+          filename: synthetic_barcodes.txt
+          filetype: txt
+          filesize: 0
+          url: onlists/synthetic_barcodes.txt
+          urltype: local
+          md5: 3c6252ba8678b05a6f42ead5a76bdbd2
+        regions: []
+      - region_id: linker
+        region_type:
+          - RGN:technical:linker
+        name: Linker
+        sequence_type: fixed
+        sequence: TT
+        min_len: 2
+        max_len: 2
+        onlist: null
+        regions: []
+      - region_id: umi
+        region_type:
+          - RGN:partition:molecule
+        name: UMI
+        sequence_type: random
+        sequence: XX
+        min_len: 2
+        max_len: 2
+        onlist: null
+        regions: []
+      - region_id: cdna
+        region_type:
+          - RGN:measure:transcript
+        name: cDNA
+        sequence_type: random
+        sequence: XXXX
+        min_len: 4
+        max_len: 4
+        onlist: null
+        regions: []

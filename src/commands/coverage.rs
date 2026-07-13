@@ -5,16 +5,17 @@ use crate::report::{
 use crate::scan::{is_region_covered, run_collector, FastqCollector};
 use crate::CommonMetricArgs;
 use anyhow::Result;
-use std::collections::BTreeMap;
+use seqspec::models::region_type::RegionTypeValue;
+use std::collections::{BTreeMap, BTreeSet};
 
-const SHARED_REGION_TYPES: &[&str] = &[
-    "barcode",
-    "umi",
-    "cdna",
-    "gdna",
-    "protein",
-    "tag",
-    "sgrna_target",
+const SHARED_REGION_TERMS: &[&str] = &[
+    "RGN:partition:cell",
+    "RGN:partition:molecule",
+    "RGN:measure:transcript",
+    "RGN:measure:genome",
+    "RGN:measure:protein_feature",
+    "RGN:measure:reporter",
+    "RGN:measure:guide",
 ];
 
 #[derive(Debug, clap::Args)]
@@ -27,7 +28,7 @@ pub struct CoverageArgs {
 pub(crate) struct CoverageRegionSummary {
     region_id: String,
     name: String,
-    region_type: String,
+    region_type: RegionTypeValue,
     sequence_type: String,
     start: usize,
     stop: usize,
@@ -343,23 +344,27 @@ pub(crate) fn build_overlap_results(
                 .entry(region.region_id.clone())
                 .or_default()
                 .push(projection.clone());
-            by_region_type
-                .entry(region.region_type.clone())
-                .or_default()
-                .push(projection);
+            for term in SHARED_REGION_TERMS {
+                if region.region_type.has_term(term) {
+                    by_region_type
+                        .entry((*term).to_string())
+                        .or_default()
+                        .push(projection.clone());
+                }
+            }
         }
     }
 
     let mut results = Vec::new();
 
     for (region_id, projections) in by_region_id {
-        if projections.len() > 1 {
+        if spans_multiple_reads(&projections) {
             results.push(build_region_id_overlap_result(&region_id, &projections));
         }
     }
 
     for (region_type, projections) in by_region_type {
-        if projections.len() > 1 && SHARED_REGION_TYPES.contains(&region_type.as_str()) {
+        if spans_multiple_reads(&projections) {
             results.push(build_region_type_overlap_result(&region_type, &projections));
         }
     }
@@ -372,11 +377,20 @@ struct OverlapProjection {
     file_id: String,
     read_id: String,
     region_id: String,
-    region_type: String,
+    region_type: RegionTypeValue,
     start: usize,
     stop: usize,
     covered_count: usize,
     covered_fraction: f64,
+}
+
+fn spans_multiple_reads(projections: &[OverlapProjection]) -> bool {
+    projections
+        .iter()
+        .map(|projection| projection.read_id.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        > 1
 }
 
 fn build_region_id_overlap_result(
@@ -472,6 +486,12 @@ fn build_region_type_overlap_result(
             })
             .collect::<Vec<_>>(),
     );
+    let region_type_id = result.expected_scalar(
+        "shared_region_type_term",
+        "Canonical region ontology term used to group these projections.",
+        region_type,
+        None,
+    );
     let observed_id = result.observed_records(
         "covered_counts_by_read",
         "Observed coverage counts for this shared biological region type across matched reads.",
@@ -495,8 +515,35 @@ fn build_region_type_overlap_result(
             "Region type '{}' is visible in multiple reads. This can reflect intended paired-end overlap or a read-geometry mismatch when observed reads extend farther than expected.",
             region_type
         ),
-        vec![expected_id],
+        vec![expected_id, region_type_id],
         vec![observed_id],
     );
     result.build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn projection(read_id: &str, region_id: &str) -> OverlapProjection {
+        OverlapProjection {
+            file_id: format!("{read_id}.fastq"),
+            read_id: read_id.to_string(),
+            region_id: region_id.to_string(),
+            region_type: RegionTypeValue::from("barcode"),
+            start: 0,
+            stop: 4,
+            covered_count: 1,
+            covered_fraction: 1.0,
+        }
+    }
+
+    #[test]
+    fn test_spans_multiple_reads_requires_distinct_read_ids() {
+        let same_read = vec![projection("R1", "barcode_a"), projection("R1", "barcode_b")];
+        let distinct_reads = vec![projection("R1", "barcode"), projection("R2", "barcode")];
+
+        assert!(!spans_multiple_reads(&same_read));
+        assert!(spans_multiple_reads(&distinct_reads));
+    }
 }

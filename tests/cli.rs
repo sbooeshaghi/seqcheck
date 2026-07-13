@@ -46,7 +46,7 @@ fn parse_json(args: &[&str]) -> Value {
     serde_json::from_str(&run_success(args)).unwrap()
 }
 
-fn find_result<'a, F>(report: &'a Value, predicate: F) -> &'a Value
+fn find_result<F>(report: &Value, predicate: F) -> &Value
 where
     F: Fn(&Value) -> bool,
 {
@@ -171,6 +171,43 @@ fn test_check_json_aggregates_core_checks() {
     assert!(checks.contains(&"random"));
     assert!(!checks.contains(&"cut"));
     assert!(!checks.contains(&"hist"));
+}
+
+#[test]
+fn test_check_json_accepts_ontology_region_type_lists() {
+    let parsed = parse_json(&[
+        "check",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/synthetic/spec_0_5.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/synthetic/fastqs/synthetic_R1.fastq",
+    ]);
+
+    let barcode = find_result(&parsed, |result| {
+        result["check"] == "coverage" && result["regions"] == serde_json::json!(["barcode"])
+    });
+    assert_eq!(
+        metric_value(barcode, "expected", "expected_region")[0]["region_type"],
+        serde_json::json!(["RGN:partition:cell"])
+    );
+
+    let primer = find_result(&parsed, |result| {
+        result["check"] == "primer" && result["regions"] == serde_json::json!(["primer"])
+    });
+    assert_eq!(
+        metric_value(primer, "expected", "primer_region_type"),
+        &serde_json::json!(["RGN:technical:primer"])
+    );
+
+    let onlist = find_result(&parsed, |result| {
+        result["check"] == "onlist" && result["regions"] == serde_json::json!(["barcode"])
+    });
+    assert_eq!(metric_value(onlist, "observed", "covered_count"), 4);
 }
 
 #[test]
@@ -413,6 +450,59 @@ fn test_coverage_surfaces_duplicate_assignment_as_results() {
         shared_region_type,
         "shared_region_type_visible_in_multiple_reads"
     ));
+    assert_eq!(
+        metric_value(
+            shared_region_type,
+            "expected",
+            "shared_region_type_term"
+        ),
+        "RGN:partition:cell"
+    );
+}
+
+#[test]
+fn test_coverage_groups_ontology_terms_and_preserves_multiple_roles() {
+    let parsed = parse_json(&[
+        "coverage",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/bad_geometry/spec_0_5.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/bad_geometry/fastqs/bad_R1.fastq",
+        "tests/fixtures/bad_geometry/fastqs/bad_R2.fastq",
+    ]);
+
+    let shared_cell_partition = find_result(&parsed, |result| {
+        result["check"] == "coverage"
+            && result["regions"].as_array().unwrap().is_empty()
+            && has_assessment(result, "shared_region_type_visible_in_multiple_reads")
+            && metric_value(result, "expected", "projected_coordinates_by_read")[0]["region_type"]
+                == serde_json::json!(["RGN:partition:cell"])
+    });
+    assert!(shared_cell_partition["assessment"][0]["description"]
+        .as_str()
+        .unwrap()
+        .contains("RGN:partition:cell"));
+    assert_eq!(
+        metric_value(
+            shared_cell_partition,
+            "expected",
+            "shared_region_type_term"
+        ),
+        "RGN:partition:cell"
+    );
+
+    let guide = find_result(&parsed, |result| {
+        result["check"] == "coverage" && result["regions"] == serde_json::json!(["feature"])
+    });
+    assert_eq!(
+        metric_value(guide, "expected", "expected_region")[0]["region_type"],
+        serde_json::json!(["RGN:measure:guide", "RGN:classify:perturbation"])
+    );
 }
 
 #[test]
@@ -837,6 +927,35 @@ fn test_report_command_writes_html_with_embedded_payloads() {
     assert!(html.contains("id=\"seqspec-lib-data\""));
     assert!(html.contains("\"assay_name\": \"Synthetic Seqcheck Fixture\""));
     assert!(html.contains("\"modality\": \"rna\""));
+
+    let _ = fs::remove_file(report_json);
+    let _ = fs::remove_file(report_html);
+}
+
+#[test]
+fn test_report_command_displays_multiple_ontology_terms() {
+    let report_json = temp_path("json");
+    let report_html = temp_path("html");
+
+    run_success(&[
+        "coverage",
+        "--format",
+        "json",
+        "-o",
+        &report_json,
+        "-s",
+        "tests/fixtures/bad_geometry/spec_0_5.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        "tests/fixtures/bad_geometry/fastqs/bad_R1.fastq",
+        "tests/fixtures/bad_geometry/fastqs/bad_R2.fastq",
+    ]);
+    run_success(&["report", "-i", &report_json, "-o", &report_html]);
+
+    let html = fs::read_to_string(&report_html).unwrap();
+    assert!(html.contains("\"region_type\": \"RGN:measure:guide+RGN:classify:perturbation\""));
 
     let _ = fs::remove_file(report_json);
     let _ = fs::remove_file(report_html);

@@ -9,6 +9,7 @@ use crate::sequence::find_all_exact_hits;
 use crate::sequence::reverse_complement_sequence;
 use crate::CommonMetricArgs;
 use anyhow::Result;
+use seqspec::models::region_type::RegionTypeValue;
 use std::collections::HashMap;
 
 const TOP_POSITION_LIMIT: usize = 10;
@@ -40,7 +41,7 @@ pub(crate) struct PrimerCollector {
     file_id: String,
     read_id: String,
     primer_id: String,
-    primer_region_type: String,
+    primer_region_type: RegionTypeValue,
     primer_sequence_type: String,
     primer_sequence: String,
     reverse_complement: String,
@@ -111,16 +112,13 @@ impl FastqCollector for PrimerCollector {
         let forward_hits = find_all_exact_hits(sequence, &self.primer_sequence);
         let reverse_complement_hits = find_all_exact_hits(sequence, &self.reverse_complement);
 
-        if forward_hits.iter().any(|position| *position == 0) {
+        if forward_hits.contains(&0) {
             self.state.forward_start_hit_count += 1;
         }
         if forward_hits.iter().any(|position| *position > 0) {
             self.state.forward_internal_hit_count += 1;
         }
-        if reverse_complement_hits
-            .iter()
-            .any(|position| *position == 0)
-        {
+        if reverse_complement_hits.contains(&0) {
             self.state.reverse_complement_start_hit_count += 1;
         }
         if reverse_complement_hits.iter().any(|position| *position > 0) {
@@ -164,7 +162,7 @@ fn build_primer_result(
     file_id: &str,
     read_id: &str,
     primer_id: &str,
-    primer_region_type: &str,
+    primer_region_type: &RegionTypeValue,
     primer_sequence_type: &str,
     primer_sequence: &str,
     primer_classification: &PrimerClassification,
