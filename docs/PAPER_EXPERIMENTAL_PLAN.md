@@ -91,6 +91,25 @@ an unmodified control. Unresolved pairs will be excluded before the calibration
 and evaluation split. Cohort selection will not use seqcheck warning counts or
 controlled perturbation performance.
 
+Build the review pool with `scripts/build_cohort_candidates.py` and the versioned
+rules in `docs/cohort_family_rules.json`. The rules use exact portal assay titles
+and, where available, exact assay terms to propose a family. The hydrated
+seqspec supplies the actual modality. For example, a `Perturb-seq` title can
+describe either a guide read or its companion RNA read, so only a `crispr` or
+`guide` modality can qualify for the perturbation family. These automated fields
+screen candidates; they do not approve them.
+
+The builder normalizes candidates to seqspec 0.5.0, records schema/structural
+validation separately from network-dependent resource validation, fingerprints
+the library/read structure without FASTQ bindings, and compares spec-declared
+FASTQs with portal-linked FASTQs. Resource validation runs only after a spec
+passes the internal checks, so an unavailable endpoint cannot hide a stable
+structural failure. Volatile resource outcomes and retry counts are recorded but
+do not change the candidate selection identifier. The builder writes a blank
+two-reviewer sheet and marks the cohort as unfrozen. A rerun never overwrites an
+existing review sheet and reports when that sheet belongs to a different
+selection identifier.
+
 Two configurations from each family will form a 12-configuration calibration
 set. The remaining 18 configurations will be locked before thresholds are chosen
 and used only for evaluation. Existing repository fixtures will be used for

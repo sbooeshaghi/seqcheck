@@ -1,0 +1,105 @@
+{
+  "schema_version": "0.1.0",
+  "candidate_count_per_family": 15,
+  "minimum_final_count_per_family": 5,
+  "selection_seed": 20260713,
+  "families": [
+    {
+      "id": "droplet_rna",
+      "label": "Droplet single-cell or single-nucleus RNA sequencing",
+      "preferred_assay_titles": [
+        "scRNA-seq"
+      ],
+      "assay_terms": [
+        "single-cell RNA sequencing assay",
+        "single-nucleus RNA sequencing assay"
+      ],
+      "expected_modalities": [
+        "rna"
+      ],
+      "note": "Portal titles propose the family. Reviewers must verify that the configuration represents the RNA modality of a droplet assay."
+    },
+    {
+      "id": "combinatorial_rna",
+      "label": "Combinatorial-indexing RNA sequencing",
+      "preferred_assay_titles": [
+        "Parse SPLiT-seq",
+        "SHARE-seq"
+      ],
+      "assay_terms": [
+        "single-cell RNA sequencing assay",
+        "single-nucleus RNA sequencing assay"
+      ],
+      "expected_modalities": [
+        "rna"
+      ],
+      "note": "SHARE-seq also matches the joint multiome family. The candidate builder preserves both proposals for adjudication."
+    },
+    {
+      "id": "sc_atac",
+      "label": "Single-cell or single-nucleus ATAC sequencing",
+      "preferred_assay_titles": [
+        "10x snATAC-seq with Scale pre-indexing",
+        "snATAC-seq"
+      ],
+      "assay_terms": [
+        "single-cell ATAC-seq",
+        "single-nucleus ATAC-seq"
+      ],
+      "expected_modalities": [
+        "atac"
+      ],
+      "note": "Reviewers must verify single-cell or single-nucleus context and the represented ATAC modality."
+    },
+    {
+      "id": "multiome",
+      "label": "Joint RNA and chromatin multiome sequencing",
+      "preferred_assay_titles": [
+        "10x multiome",
+        "mtscMultiome",
+        "SHARE-seq"
+      ],
+      "assay_terms": [
+        "single-cell ATAC-seq",
+        "single-cell RNA sequencing assay",
+        "single-nucleus ATAC-seq",
+        "single-nucleus RNA sequencing assay"
+      ],
+      "expected_modalities": [
+        "atac",
+        "rna"
+      ],
+      "note": "A configuration file may represent only one modality of a joint experiment. Reviewers must verify the linked configuration pair."
+    },
+    {
+      "id": "perturbation",
+      "label": "Perturbation or guide-capture sequencing",
+      "preferred_assay_titles": [
+        "Parse Perturb-seq",
+        "Perturb-seq",
+        "scCRISPR screen",
+        "TAP-seq"
+      ],
+      "expected_modalities": [
+        "crispr",
+        "guide"
+      ],
+      "note": "Reviewers must verify that the configuration contains the perturbation or guide-capture measurement rather than only a companion expression read."
+    },
+    {
+      "id": "feature_tag",
+      "label": "Protein, feature, or sample-tag barcoding",
+      "preferred_assay_titles": [
+        "10x multiome with MULTI-seq"
+      ],
+      "assay_terms": [
+        ""
+      ],
+      "expected_modalities": [
+        "protein",
+        "tag"
+      ],
+      "note": "Reviewers must verify that the configuration contains the feature or sample-tag modality rather than only a companion RNA or ATAC read."
+    }
+  ]
+}
