@@ -143,7 +143,20 @@ def create_inputs(root: Path) -> dict[str, Path]:
                 "effective_expected_fastq_accessions": (
                     "FASTQ_COMPLEMENT;FASTQ_MEASURE"
                 ),
-            }
+            },
+            {
+                "split": "evaluation",
+                "final_family": "rna_family",
+                "configuration_accession": "CONFIG2",
+                "modalities": "rna",
+                "effective_spec_path": str(spec),
+                "effective_spec_sha256": MODULE.file_sha256(spec),
+                "fastq_accessions": "FASTQ_MEASURE;FASTQ_COMPLEMENT",
+                "fastq_urls": "https://example.test/measure.fastq.gz;https://example.test/complement.fastq.gz",
+                "effective_expected_fastq_accessions": (
+                    "FASTQ_COMPLEMENT;FASTQ_MEASURE"
+                ),
+            },
         ],
     )
     cohort_manifest = root / "cohort_manifest.json"
@@ -153,7 +166,7 @@ def create_inputs(root: Path) -> dict[str, Path]:
             "schema_version": "0.1.0",
             "freeze_id": "freeze-test",
             "frozen": True,
-            "counts": {"calibration": 1},
+            "counts": {"calibration": 1, "evaluation": 1},
             "outputs": {"cohort": MODULE.file_identity(cohort)},
         },
     )
@@ -162,7 +175,10 @@ def create_inputs(root: Path) -> dict[str, Path]:
         protocol,
         {
             "schema_version": "0.1.0",
-            "cohort_limits": {"configurations": 1, "fastqs": 2},
+            "cohort_limits": {
+                "calibration": {"configurations": 1, "fastqs": 2},
+                "evaluation": {"configurations": 1, "fastqs": 2},
+            },
             "case_selection": {
                 "max_fastqs_per_configuration": 2,
                 "primary_read_rule": "largest_measurement_span",
@@ -255,6 +271,49 @@ class BuildSamplingCasesTests(unittest.TestCase):
         )
         self.assertEqual(len(selected), 1)
         self.assertEqual(selected[0]["fastq_accession"], "A")
+
+    def test_cli_selects_the_locked_evaluation_split(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            inputs = create_inputs(root)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--cohort-manifest",
+                    str(inputs["cohort_manifest"]),
+                    "--sampling-protocol",
+                    str(inputs["protocol"]),
+                    "--seqspec-bin",
+                    str(inputs["seqspec"]),
+                    "--cohort-split",
+                    "evaluation",
+                    "--output-root",
+                    str(root / "evaluation"),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            manifest = json.loads(
+                Path(completed.stdout.strip()).read_text(encoding="utf-8")
+            )
+            cases = json.loads(
+                Path(manifest["outputs"]["cases_json"]["path"]).read_text(
+                    encoding="utf-8"
+                )
+            )["cases"]
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(manifest["cohort_split"], "evaluation")
+        self.assertEqual(manifest["counts"]["configurations"], 1)
+        self.assertEqual(
+            {value["configuration_accession"] for value in cases}, {"CONFIG2"}
+        )
+        self.assertEqual(
+            manifest["declared_transfer"]["minimum_source_traversals_per_fastq"],
+            1,
+        )
 
     def test_sequence_file_accession_prefers_url_and_normalizes_suffix(self) -> None:
         self.assertEqual(

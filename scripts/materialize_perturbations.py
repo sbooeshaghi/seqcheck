@@ -47,6 +47,21 @@ STUDY_IDENTITY_FIELDS = (
     "runtime",
     "runner",
 )
+BUNDLE_IDENTITY_FIELDS = (
+    "schema_version",
+    "cohort_split",
+    "selection_id",
+    "study_run_id",
+    "sampling_policy_id",
+    "case_selection_sha256",
+    "sampling_study_sha256",
+    "sampling_policy_sha256",
+    "sampling_rule",
+    "sampler",
+    "runner",
+    "runtime",
+    "samples",
+)
 CONDITION_FIELDS = (
     "materialization_id",
     "condition_id",
@@ -94,7 +109,9 @@ def parse_args() -> argparse.Namespace:
         description="Materialize clean and controlled perturbation conditions."
     )
     parser.add_argument("--perturbation-inventory", required=True, type=Path)
-    parser.add_argument("--sampling-study", required=True, type=Path)
+    samples = parser.add_mutually_exclusive_group(required=True)
+    samples.add_argument("--sampling-study", type=Path)
+    samples.add_argument("--sample-bundle", type=Path)
     parser.add_argument("--sampling-policy", required=True, type=Path)
     parser.add_argument("--perturbation-protocol", required=True, type=Path)
     parser.add_argument("--seqspec-bin", required=True, type=Path)
@@ -109,7 +126,12 @@ def main() -> int:
     try:
         manifest = materialize_perturbations(
             inventory_manifest_path=args.perturbation_inventory.resolve(),
-            study_manifest_path=args.sampling_study.resolve(),
+            study_manifest_path=(
+                args.sampling_study.resolve() if args.sampling_study else None
+            ),
+            sample_bundle_path=(
+                args.sample_bundle.resolve() if args.sample_bundle else None
+            ),
             sampling_policy_path=args.sampling_policy.resolve(),
             perturbation_protocol_path=args.perturbation_protocol.resolve(),
             seqspec_bin=args.seqspec_bin.resolve(),
@@ -127,16 +149,18 @@ def main() -> int:
 def materialize_perturbations(
     *,
     inventory_manifest_path: Path,
-    study_manifest_path: Path,
     sampling_policy_path: Path,
     perturbation_protocol_path: Path,
     seqspec_bin: Path,
     yq_bin: Path,
     output_root: Path,
     timeout_seconds: int,
+    study_manifest_path: Path | None = None,
+    sample_bundle_path: Path | None = None,
 ) -> dict[str, Any]:
     inventory_manifest_path = inventory_manifest_path.resolve()
-    study_manifest_path = study_manifest_path.resolve()
+    study_manifest_path = study_manifest_path.resolve() if study_manifest_path else None
+    sample_bundle_path = sample_bundle_path.resolve() if sample_bundle_path else None
     sampling_policy_path = sampling_policy_path.resolve()
     perturbation_protocol_path = perturbation_protocol_path.resolve()
     seqspec_bin = seqspec_bin.resolve()
@@ -144,6 +168,8 @@ def materialize_perturbations(
     output_root = output_root.resolve()
     if timeout_seconds <= 0:
         raise ValueError("timeout must be positive")
+    if (study_manifest_path is None) == (sample_bundle_path is None):
+        raise ValueError("provide exactly one sampling study or sample bundle")
     if output_root.exists():
         raise ValueError(f"refusing to overwrite existing output root: {output_root}")
     inventory, inventory_records = load_inventory(inventory_manifest_path)
@@ -153,23 +179,56 @@ def materialize_perturbations(
         perturbation_protocol_path
     ):
         raise ValueError("perturbation protocol differs from applicability inventory")
-    study, cases, clean_inputs = load_sampling_study(
-        study_manifest_path,
-        selection_id=inventory["selection_id"],
-    )
+    if study_manifest_path is not None:
+        study, cases, clean_inputs = load_sampling_study(
+            study_manifest_path,
+            selection_id=inventory["selection_id"],
+        )
+        study_run_id = study["study_run_id"]
+        sample_source = {
+            "kind": "sampling_study",
+            "id": study_run_id,
+            "sha256": runtime.file_sha256(study_manifest_path),
+        }
+        selected_inputs = None
+    else:
+        bundle, cases, selected_inputs = load_sample_bundle(
+            sample_bundle_path,
+            selection_id=inventory["selection_id"],
+        )
+        study_run_id = bundle["study_run_id"]
+        sample_source = {
+            "kind": "policy_sample_bundle",
+            "id": bundle["bundle_id"],
+            "sha256": runtime.file_sha256(sample_bundle_path),
+        }
     policy = load_sampling_policy(
         sampling_policy_path,
-        study_run_id=study["study_run_id"],
+        study_run_id=study_run_id,
         require_frozen=protocol["base_sample"]["require_frozen_sampling_policy"],
     )
-    selected_inputs = select_clean_inputs(
-        clean_inputs,
-        policy=policy,
-        reservoir_seed=protocol["base_sample"]["reservoir_seed"],
+    if sample_bundle_path is not None:
+        if bundle["sampling_policy_id"] != policy["policy_id"]:
+            raise ValueError("sample bundle uses a different sampling policy")
+        if bundle["sampling_policy_sha256"] != runtime.file_sha256(
+            sampling_policy_path
+        ):
+            raise ValueError("sample bundle sampling policy hash differs")
+        if bundle["sampling_rule"] != policy["default"]:
+            raise ValueError("sample bundle sampling rule differs from policy")
+    policy_seed = policy["default"]["sampling_seed"]
+    expected_seed = (
+        protocol["base_sample"]["reservoir_seed"]
+        if policy["default"]["sampling_method"] == "reservoir"
+        else None
     )
+    if policy_seed != expected_seed:
+        raise ValueError("perturbation base-sample seed differs from sampling policy")
+    if selected_inputs is None:
+        selected_inputs = select_clean_inputs(clean_inputs, policy=policy)
     case_map = {case["case_id"]: case for case in cases}
     if set(selected_inputs) != set(case_map):
-        raise ValueError("sampling study does not contain every selected FASTQ case")
+        raise ValueError("sample source does not contain every selected FASTQ case")
 
     seqspec_identity = require_executable(seqspec_bin, timeout_seconds)
     if runtime.functional_executable_identity(seqspec_identity) != inventory["seqspec"]:
@@ -180,13 +239,13 @@ def materialize_perturbations(
         "schema_version": SCHEMA_VERSION,
         "selection_id": inventory["selection_id"],
         "inventory_id": inventory["inventory_id"],
-        "study_run_id": study["study_run_id"],
+        "study_run_id": study_run_id,
         "sampling_policy_id": policy["policy_id"],
-        "sampling_study_sha256": runtime.file_sha256(study_manifest_path),
+        "sample_source": sample_source,
         "base_samples": [
             {
                 "case_id": case_id,
-                "matrix_id": value["matrix_id"],
+                "source_id": value["source_id"],
                 "condition_id": value["condition_id"],
                 "sha256": value["sha256"],
                 "size_bytes": value["size_bytes"],
@@ -302,7 +361,9 @@ def materialize_perturbations(
                 "perturbation_inventory": runtime.file_identity(
                     inventory_manifest_path
                 ),
-                "sampling_study": runtime.file_identity(study_manifest_path),
+                "sample_source": runtime.file_identity(
+                    study_manifest_path or sample_bundle_path
+                ),
                 "sampling_policy": runtime.file_identity(sampling_policy_path),
                 "perturbation_protocol": runtime.file_identity(
                     perturbation_protocol_path
@@ -311,11 +372,6 @@ def materialize_perturbations(
             "tools": tools,
             "base_sample": {
                 **policy["default"],
-                "reservoir_seed": (
-                    protocol["base_sample"]["reservoir_seed"]
-                    if policy["default"]["sampling_method"] == "reservoir"
-                    else None
-                ),
             },
             "counts": validation["counts"],
             "outputs": {
@@ -425,18 +481,104 @@ def load_sampling_policy(
         raise ValueError("sampling policy method is invalid")
     if positive_int(default.get("records_per_fastq"), "policy sample size") <= 0:
         raise ValueError("sampling policy size is invalid")
+    seed = default.get("sampling_seed")
+    if default["sampling_method"] == "reservoir":
+        if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+            raise ValueError("sampling policy reservoir seed is invalid")
+    elif seed is not None:
+        raise ValueError("prefix sampling policy must not declare a seed")
     return policy
+
+
+def load_sample_bundle(
+    path: Path | None, *, selection_id: str
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    if path is None:
+        raise ValueError("sample bundle path is missing")
+    bundle = runtime.load_json(path)
+    if bundle.get("valid") is not True:
+        raise ValueError("policy sample bundle is not valid")
+    stable = {field: bundle.get(field) for field in BUNDLE_IDENTITY_FIELDS}
+    if any(stable[field] is None for field in BUNDLE_IDENTITY_FIELDS):
+        raise ValueError("policy sample bundle identity is incomplete")
+    if runtime.sha256_json(stable)[:16] != bundle.get("bundle_id"):
+        raise ValueError("policy sample bundle id is not content-addressed")
+    if bundle.get("cohort_split") != "evaluation":
+        raise ValueError("policy sample bundle is not from the evaluation split")
+    if bundle.get("selection_id") != selection_id:
+        raise ValueError("sample bundle selection differs from perturbation inventory")
+    selection_path = verified_path(
+        bundle.get("inputs", {}).get("case_selection_manifest", {}),
+        "sample bundle case selection",
+    )
+    selection, cases = inventory_builder.load_case_selection(selection_path)
+    if selection["selection_id"] != selection_id:
+        raise ValueError("sample bundle case selection id differs")
+    records = bundle.get("sample_records")
+    if not isinstance(records, list) or len(records) != len(cases):
+        raise ValueError("sample bundle records do not reconcile with selected cases")
+    if [stable_bundle_sample(value) for value in records] != bundle["samples"]:
+        raise ValueError("sample bundle records differ from content-addressed samples")
+    verified_path(bundle.get("outputs", {}).get("samples", {}), "sample bundle table")
+    validation_path = verified_path(
+        bundle.get("outputs", {}).get("validation", {}),
+        "sample bundle validation",
+    )
+    validation = runtime.load_json(validation_path)
+    if (
+        validation.get("valid") is not True
+        or validation.get("bundle_id") != bundle["bundle_id"]
+    ):
+        raise ValueError("sample bundle validation is not valid")
+    result = {}
+    for record in records:
+        case_id = str(record.get("case_id", ""))
+        if not case_id or case_id in result:
+            raise ValueError("sample bundle case identifiers are invalid")
+        output_path = Path(str(record.get("output_path", ""))).resolve()
+        if runtime.file_sha256(output_path) != record.get("output_sha256"):
+            raise ValueError(f"{case_id}: policy sample FASTQ hash changed")
+        manifest_path = Path(str(record.get("sample_manifest_path", ""))).resolve()
+        if runtime.file_sha256(manifest_path) != record.get("sample_manifest_sha256"):
+            raise ValueError(f"{case_id}: policy sample manifest hash changed")
+        result[case_id] = {
+            "source_id": bundle["bundle_id"],
+            "condition_id": record["sample_id"],
+            "method": record["sampling_method"],
+            "requested_records_per_fastq": record["requested_records_per_fastq"],
+            "seed": record["sampling_seed"],
+            "path": str(output_path),
+            "sha256": record["output_sha256"],
+            "size_bytes": record["output_size_bytes"],
+            "records_selected": record["records_selected"],
+        }
+    if set(result) != {case["case_id"] for case in cases}:
+        raise ValueError("sample bundle does not contain every selected case")
+    return bundle, cases, result
+
+
+def stable_bundle_sample(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item
+        for key, item in value.items()
+        if key
+        not in {
+            "bundle_id",
+            "output_path",
+            "sample_manifest_path",
+            "sample_manifest_sha256",
+        }
+    }
 
 
 def select_clean_inputs(
     matrices: dict[str, dict[str, Any]],
     *,
     policy: dict[str, Any],
-    reservoir_seed: int,
 ) -> dict[str, dict[str, Any]]:
     method = policy["default"]["sampling_method"]
     size = positive_int(policy["default"]["records_per_fastq"], "sample size")
-    seed = reservoir_seed if method == "reservoir" else None
+    seed = policy["default"]["sampling_seed"]
     result = {}
     for case_id, matrix in matrices.items():
         matches = [
@@ -455,7 +597,7 @@ def select_clean_inputs(
         if int(output.get("records_selected", 0)) != size:
             raise ValueError(f"{case_id}: base sample has fewer records than required")
         result[case_id] = {
-            "matrix_id": matrix["matrix_id"],
+            "source_id": matrix["matrix_id"],
             "condition_id": matches[0]["condition_id"],
             "method": method,
             "requested_records_per_fastq": size,
@@ -529,7 +671,7 @@ def clean_input_row(case: dict[str, Any], sample: dict[str, Any]) -> dict[str, A
         "sha256": sample["sha256"],
         "size_bytes": sample["size_bytes"],
         "records": sample["records_selected"],
-        "matrix_id": sample["matrix_id"],
+        "sample_source_id": sample["source_id"],
         "sample_condition_id": sample["condition_id"],
     }
 

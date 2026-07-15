@@ -6,6 +6,7 @@
   "policy": {
     "preferred_records_per_fastq": 10000,
     "escalation_records_per_fastq": 100000,
+    "reservoir_seed": 17,
     "median_absolute_error_max": 0.01,
     "p95_absolute_error_max": 0.05,
     "prefix_bias_ci_lower_min": -0.01,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select ontology-diverse FASTQs from a frozen calibration cohort."""
+"""Select ontology-diverse FASTQs from one frozen cohort split."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from typing import Any
 
 SCHEMA_VERSION = "0.1.0"
 SELECTOR_VERSION = "0.1.0"
+COHORT_SPLITS = ("calibration", "evaluation")
 ROLE_PREFIXES = {
     "measure": "RGN:measure:",
     "partition": "RGN:partition:",
@@ -50,13 +51,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Select one or two ontology-diverse FASTQs from every configuration "
-            "in a frozen calibration split."
+            "in one frozen cohort split."
         )
     )
     parser.add_argument("--cohort-manifest", required=True, type=Path)
     parser.add_argument("--sampling-protocol", required=True, type=Path)
     parser.add_argument("--seqspec-bin", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
+    parser.add_argument(
+        "--cohort-split",
+        choices=COHORT_SPLITS,
+        default="calibration",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=120)
     return parser.parse_args()
 
@@ -70,6 +76,7 @@ def main() -> int:
             seqspec_bin=args.seqspec_bin.resolve(),
             output_root=args.output_root.resolve(),
             timeout_seconds=args.timeout_seconds,
+            cohort_split=args.cohort_split,
         )
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"build_sampling_cases: {error}", file=sys.stderr)
@@ -85,6 +92,7 @@ def build_sampling_cases(
     seqspec_bin: Path,
     output_root: Path,
     timeout_seconds: int,
+    cohort_split: str = "calibration",
 ) -> dict[str, Any]:
     if timeout_seconds <= 0:
         raise ValueError("timeout must be positive")
@@ -97,13 +105,14 @@ def build_sampling_cases(
         cohort_manifest,
         protocol,
         seqspec_bin,
+        cohort_split,
     )
     selection = protocol["case_selection"]
     max_fastqs = int(selection["max_fastqs_per_configuration"])
     selected_rows = []
     configuration_records = []
     for row in sorted(
-        (value for value in cohort_rows if value.get("split") == "calibration"),
+        (value for value in cohort_rows if value.get("split") == cohort_split),
         key=lambda value: (
             value.get("final_family", ""),
             value.get("configuration_accession", ""),
@@ -127,6 +136,7 @@ def build_sampling_cases(
     stable_manifest = {
         "schema_version": SCHEMA_VERSION,
         "freeze_id": str(cohort_manifest["freeze_id"]),
+        "cohort_split": cohort_split,
         "cohort_sha256": file_sha256(cohort_path),
         "sampling_protocol_sha256": file_sha256(protocol_path),
         "selector": functional_selector_identity(selector),
@@ -148,6 +158,7 @@ def build_sampling_cases(
         cohort_rows=cohort_rows,
         configurations=configuration_records,
         cases=cases,
+        cohort_split=cohort_split,
     )
     if not validation["valid"]:
         raise ValueError(
@@ -178,6 +189,7 @@ def build_sampling_cases(
                 "schema_version": SCHEMA_VERSION,
                 "selection_id": selection_id,
                 "freeze_id": cohort_manifest["freeze_id"],
+                "cohort_split": cohort_split,
                 "cases": cases,
             },
         )
@@ -218,7 +230,10 @@ def validate_inputs(
     cohort_manifest: dict[str, Any],
     protocol: dict[str, Any],
     seqspec_bin: Path,
+    cohort_split: str,
 ) -> tuple[Path, list[dict[str, str]]]:
+    if cohort_split not in COHORT_SPLITS:
+        raise ValueError(f"unsupported cohort split: {cohort_split}")
     if cohort_manifest.get("frozen") is not True:
         raise ValueError("cohort manifest is not frozen")
     if not str(cohort_manifest.get("freeze_id", "")).strip():
@@ -230,23 +245,23 @@ def validate_inputs(
     if file_sha256(cohort_path) != str(cohort_identity.get("sha256", "")):
         raise ValueError("frozen cohort table hash changed")
     cohort_rows = read_csv(cohort_path)
-    expected_calibration = int(cohort_manifest.get("counts", {}).get("calibration", -1))
-    observed_calibration = sum(row.get("split") == "calibration" for row in cohort_rows)
-    if expected_calibration <= 0 or observed_calibration != expected_calibration:
-        raise ValueError("frozen cohort calibration count does not reconcile")
+    expected_split = int(cohort_manifest.get("counts", {}).get(cohort_split, -1))
+    observed_split = sum(row.get("split") == cohort_split for row in cohort_rows)
+    if expected_split <= 0 or observed_split != expected_split:
+        raise ValueError(f"frozen cohort {cohort_split} count does not reconcile")
 
     if protocol.get("schema_version") != SCHEMA_VERSION:
         raise ValueError("sampling protocol does not use schema 0.1.0")
-    limits = protocol.get("cohort_limits", {})
+    limits = cohort_limits(protocol, cohort_split)
     selection = protocol.get("case_selection", {})
-    if int(limits.get("configurations", -1)) != observed_calibration:
+    if int(limits.get("configurations", -1)) != observed_split:
         raise ValueError("sampling protocol configuration count does not match cohort")
     max_fastqs = int(selection.get("max_fastqs_per_configuration", 0))
     if max_fastqs not in {1, 2}:
         raise ValueError(
             "sampling protocol must select one or two FASTQs per configuration"
         )
-    if int(limits.get("fastqs", -1)) != observed_calibration * max_fastqs:
+    if int(limits.get("fastqs", -1)) != observed_split * max_fastqs:
         raise ValueError(
             "sampling protocol FASTQ cap does not match its selection rule"
         )
@@ -276,7 +291,7 @@ def prepare_configuration(
     modalities = split_values(required_field(row, "modalities"))
     if len(modalities) != 1:
         raise ValueError(
-            f"{configuration_accession}: calibration row must have one modality"
+            f"{configuration_accession}: selected cohort row must have one modality"
         )
     modality = modalities[0]
     spec_path = Path(required_field(row, "effective_spec_path")).resolve()
@@ -657,22 +672,26 @@ def validate_selection(
     cohort_rows: list[dict[str, str]],
     configurations: list[dict[str, Any]],
     cases: list[dict[str, Any]],
+    cohort_split: str,
 ) -> dict[str, Any]:
     errors = []
-    expected_configurations = int(protocol["cohort_limits"]["configurations"])
+    limits = cohort_limits(protocol, cohort_split)
+    expected_configurations = int(limits["configurations"])
     max_fastqs = int(protocol["case_selection"]["max_fastqs_per_configuration"])
-    expected_calibration = int(cohort_manifest["counts"]["calibration"])
+    expected_split = int(cohort_manifest["counts"][cohort_split])
     if len(configurations) != expected_configurations:
         errors.append(
             f"expected {expected_configurations} configurations, "
             f"observed {len(configurations)}"
         )
-    if len(configurations) != expected_calibration:
-        errors.append("selected configurations do not match frozen calibration count")
-    if sum(row.get("split") == "calibration" for row in cohort_rows) != len(
+    if len(configurations) != expected_split:
+        errors.append(
+            f"selected configurations do not match frozen {cohort_split} count"
+        )
+    if sum(row.get("split") == cohort_split for row in cohort_rows) != len(
         configurations
     ):
-        errors.append("not every calibration row produced a configuration")
+        errors.append(f"not every {cohort_split} row produced a configuration")
 
     for configuration in configurations:
         selected = configuration["selected"]
@@ -705,13 +724,15 @@ def validate_selection(
         errors.append("case identifiers are not unique")
     if len(fastq_keys) != len(set(fastq_keys)):
         errors.append("selected configuration/FASTQ pairs are not unique")
-    if len(cases) > int(protocol["cohort_limits"]["fastqs"]):
+    if len(cases) > int(limits["fastqs"]):
         errors.append("selected FASTQ count exceeds protocol cap")
 
     source_bytes = sum(int(value["declared_compressed_bytes"]) for value in cases)
+    calibration = cohort_split == "calibration"
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": utc_now(),
+        "cohort_split": cohort_split,
         "valid": not errors,
         "errors": errors,
         "counts": {
@@ -726,14 +747,24 @@ def validate_selection(
         },
         "declared_transfer": {
             "selected_source_bytes": source_bytes,
-            "minimum_source_traversals_per_fastq": 2,
-            "minimum_remote_bytes": source_bytes * 2,
+            "minimum_source_traversals_per_fastq": 2 if calibration else 1,
+            "minimum_remote_bytes": source_bytes * (2 if calibration else 1),
             "explanation": (
                 "One traversal creates bounded samples and one traversal creates "
                 "the complete-stream seqcheck reference."
+                if calibration
+                else "One traversal creates the frozen-policy bounded sample."
             ),
         },
     }
+
+
+def cohort_limits(protocol: dict[str, Any], cohort_split: str) -> dict[str, Any]:
+    limits = protocol.get("cohort_limits", {})
+    value = limits.get(cohort_split) if isinstance(limits, dict) else None
+    if not isinstance(value, dict):
+        raise ValueError(f"sampling protocol has no {cohort_split} cohort limits")
+    return value
 
 
 def public_case_row(value: dict[str, Any]) -> dict[str, Any]:

@@ -26,6 +26,7 @@ SAMPLER_CORE_VERSION = "0.1.0"
 SELECTION_IDENTITY_FIELDS = (
     "schema_version",
     "freeze_id",
+    "cohort_split",
     "cohort_sha256",
     "sampling_protocol_sha256",
     "selector",

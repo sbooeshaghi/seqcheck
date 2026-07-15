@@ -216,7 +216,7 @@ def fastq_records(count: int) -> list[MODULE.mutation.FastqRecord]:
     ]
 
 
-def create_inputs(root: Path) -> dict[str, Path]:
+def create_inputs(root: Path, *, cohort_split: str = "calibration") -> dict[str, Path]:
     root.mkdir(parents=True)
     seqspec = root / "seqspec"
     yq = root / "yq"
@@ -266,6 +266,7 @@ def create_inputs(root: Path) -> dict[str, Path]:
     stable_selection = {
         "schema_version": "0.1.0",
         "freeze_id": "freeze-test",
+        "cohort_split": cohort_split,
         "cohort_sha256": "cohort-test",
         "sampling_protocol_sha256": "sampling-test",
         "selector": {"version": "test", "sha256": "selector-test"},
@@ -285,6 +286,7 @@ def create_inputs(root: Path) -> dict[str, Path]:
             "schema_version": "0.1.0",
             "selection_id": selection_id,
             "freeze_id": "freeze-test",
+            "cohort_split": cohort_split,
             "cases": [case],
         },
     )
@@ -368,7 +370,11 @@ def create_inputs(root: Path) -> dict[str, Path]:
         "analysis_protocol_sha256": "analysis-test",
         "frozen": True,
         "scientific_targets_met": True,
-        "default": {"records_per_fastq": 20, "sampling_method": "reservoir"},
+        "default": {
+            "records_per_fastq": 20,
+            "sampling_method": "reservoir",
+            "sampling_seed": 17,
+        },
         "escalation_records_per_fastq": 20,
         "endpoint_decisions": [],
         "memory": {},
@@ -384,6 +390,9 @@ def create_inputs(root: Path) -> dict[str, Path]:
     )
     return {
         "inventory": Path(inventory["manifest_path"]),
+        "selection": selection,
+        "cases": cases_path,
+        "sample": sample,
         "study": study,
         "policy": policy,
         "protocol": protocol,
@@ -392,7 +401,107 @@ def create_inputs(root: Path) -> dict[str, Path]:
     }
 
 
+def create_sample_bundle(inputs: dict[str, Path], path: Path) -> Path:
+    selection = MODULE.runtime.load_json(inputs["selection"])
+    case = MODULE.runtime.load_json(inputs["cases"])["cases"][0]
+    study = MODULE.runtime.load_json(inputs["study"])
+    policy = MODULE.runtime.load_json(inputs["policy"])
+    sample_manifest = path.parent / "sample_manifest.json"
+    write_json(sample_manifest, {"sample_id": "sample-test"})
+    record = {
+        "selection_id": selection["selection_id"],
+        "sampling_policy_id": policy["policy_id"],
+        "case_id": case["case_id"],
+        "family_id": case["family_id"],
+        "configuration_accession": case["configuration_accession"],
+        "modality": case["modality"],
+        "selection_role": case["selection_role"],
+        "fastq_accession": case["fastq_accession"],
+        "read_id": case["read_id"],
+        "sample_id": "sample-test",
+        "sampling_method": policy["default"]["sampling_method"],
+        "requested_records_per_fastq": policy["default"]["records_per_fastq"],
+        "sampling_seed": policy["default"]["sampling_seed"],
+        "records_streamed": 20,
+        "records_selected": 20,
+        "complete_stream_consumed": True,
+        "source_uncompressed_sha256": "source-test",
+        "output_path": str(inputs["sample"]),
+        "output_sha256": MODULE.runtime.file_sha256(inputs["sample"]),
+        "output_size_bytes": inputs["sample"].stat().st_size,
+        "sample_manifest_path": str(sample_manifest),
+        "sample_manifest_sha256": MODULE.runtime.file_sha256(sample_manifest),
+    }
+    stable_record = MODULE.stable_bundle_sample(record)
+    stable = {
+        "schema_version": "0.1.0",
+        "cohort_split": "evaluation",
+        "selection_id": selection["selection_id"],
+        "study_run_id": study["study_run_id"],
+        "sampling_policy_id": policy["policy_id"],
+        "case_selection_sha256": MODULE.runtime.file_sha256(inputs["selection"]),
+        "sampling_study_sha256": MODULE.runtime.file_sha256(inputs["study"]),
+        "sampling_policy_sha256": MODULE.runtime.file_sha256(inputs["policy"]),
+        "sampling_rule": policy["default"],
+        "sampler": {"version": "test", "sha256": "sampler", "python": "test"},
+        "runner": {"version": "test", "sha256": "runner", "python": "test"},
+        "runtime": {"version": "test", "sha256": "runtime", "python": "test"},
+        "samples": [stable_record],
+    }
+    bundle_id = MODULE.runtime.sha256_json(stable)[:16]
+    public_record = {"bundle_id": bundle_id, **record}
+    samples_path = path.parent / "policy_samples.csv"
+    MODULE.runtime.write_csv(samples_path, [public_record], list(public_record))
+    validation_path = path.parent / "sample_validation.json"
+    write_json(
+        validation_path,
+        {"schema_version": "0.1.0", "bundle_id": bundle_id, "valid": True},
+    )
+    write_json(
+        path,
+        {
+            **stable,
+            "bundle_id": bundle_id,
+            "valid": True,
+            "inputs": {
+                "case_selection_manifest": MODULE.runtime.file_identity(
+                    inputs["selection"]
+                )
+            },
+            "sample_records": [public_record],
+            "outputs": {
+                "samples": MODULE.runtime.file_identity(samples_path),
+                "validation": MODULE.runtime.file_identity(validation_path),
+            },
+        },
+    )
+    return path
+
+
 class MaterializePerturbationsTests(unittest.TestCase):
+    def test_materializer_consumes_a_locked_policy_sample_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            inputs = create_inputs(root / "inputs", cohort_split="evaluation")
+            bundle = create_sample_bundle(inputs, root / "bundle" / "bundle.json")
+            manifest = MODULE.materialize_perturbations(
+                inventory_manifest_path=inputs["inventory"],
+                sample_bundle_path=bundle,
+                sampling_policy_path=inputs["policy"],
+                perturbation_protocol_path=inputs["protocol"],
+                seqspec_bin=inputs["seqspec"],
+                yq_bin=inputs["yq"],
+                output_root=root / "materialized",
+                timeout_seconds=10,
+            )
+            conditions = MODULE.runtime.load_json(
+                Path(manifest["outputs"]["conditions"]["path"])
+            )["conditions"]
+
+        self.assertTrue(manifest["valid"])
+        self.assertEqual(manifest["sample_source"]["kind"], "policy_sample_bundle")
+        self.assertEqual(len(conditions), 13)
+
     def test_materializer_emits_complete_deterministic_conditions(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

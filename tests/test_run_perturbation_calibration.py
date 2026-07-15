@@ -85,17 +85,28 @@ output.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
     path.chmod(0o755)
 
 
-def create_materialization(root: Path) -> dict[str, Path]:
-    inputs = materialize_fixture.create_inputs(root / "inputs")
+def create_materialization(root: Path, *, evaluation: bool = False) -> dict[str, Path]:
+    inputs = materialize_fixture.create_inputs(
+        root / "inputs",
+        cohort_split="evaluation" if evaluation else "calibration",
+    )
+    sample_args = {}
+    if evaluation:
+        sample_args["sample_bundle_path"] = materialize_fixture.create_sample_bundle(
+            inputs,
+            root / "bundle" / "bundle.json",
+        )
+    else:
+        sample_args["study_manifest_path"] = inputs["study"]
     materialization = materialize_fixture.MODULE.materialize_perturbations(
         inventory_manifest_path=inputs["inventory"],
-        study_manifest_path=inputs["study"],
         sampling_policy_path=inputs["policy"],
         perturbation_protocol_path=inputs["protocol"],
         seqspec_bin=inputs["seqspec"],
         yq_bin=inputs["yq"],
         output_root=root / "materialized",
         timeout_seconds=10,
+        **sample_args,
     )
     seqcheck = root / "seqcheck"
     fake_seqcheck(seqcheck)

@@ -496,6 +496,11 @@ def validate_analysis_protocol(
     escalation = positive_int(policy.get("escalation_records_per_fastq"), "escalation")
     if preferred not in sizes or escalation not in sizes or preferred >= escalation:
         raise ValueError("analysis policy sizes do not match the sampling protocol")
+    reservoir_seed = nonnegative_int(policy.get("reservoir_seed"), "reservoir seed")
+    if reservoir_seed not in seeds:
+        raise ValueError(
+            "analysis policy reservoir seed is not in the sampling protocol"
+        )
     thresholds = {}
     for field in (
         "median_absolute_error_max",
@@ -1276,6 +1281,11 @@ def build_policy(
                 "preferred_records_per_fastq"
             ],
             "sampling_method": "reservoir" if default_reservoir else "prefix",
+            "sampling_seed": (
+                analysis_protocol["policy"]["reservoir_seed"]
+                if default_reservoir
+                else None
+            ),
         },
         "escalation_records_per_fastq": analysis_protocol["policy"][
             "escalation_records_per_fastq"

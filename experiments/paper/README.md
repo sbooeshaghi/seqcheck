@@ -38,6 +38,7 @@ python3 scripts/build_sampling_cases.py \
   --cohort-manifest experiments/paper/runs/<cohort-run>/freeze/manifests/cohort_frozen.json \
   --sampling-protocol experiments/paper/protocol/sampling_calibration.json \
   --seqspec-bin ../seqspec/target/release/seqspec \
+  --cohort-split calibration \
   --output-root experiments/paper/runs/<run-id>/case-selection
 ```
 
@@ -186,3 +187,63 @@ be valid while the policy remains unfrozen. The policy is usable on the locked
 evaluation set only when `policy/detection_policy.json` reports `frozen: true`.
 Scientific target checks in the validation file describe calibration behavior
 only; final paper estimates come from the 18 evaluation configurations.
+
+Do not inspect the evaluation split until both policies are frozen. Then select
+and sample the evaluation FASTQs with the exact sampling rule chosen during
+calibration:
+
+```bash
+python3 scripts/build_sampling_cases.py \
+  --cohort-manifest experiments/paper/runs/<cohort-run>/freeze/manifests/cohort_frozen.json \
+  --sampling-protocol experiments/paper/protocol/sampling_calibration.json \
+  --seqspec-bin ../seqspec/target/release/seqspec \
+  --cohort-split evaluation \
+  --output-root experiments/paper/runs/<run-id>/evaluation-case-selection
+
+python3 scripts/sample_policy_cases.py \
+  --case-selection-manifest experiments/paper/runs/<run-id>/evaluation-case-selection/manifests/case_selection.json \
+  --sampling-study experiments/paper/runs/<run-id>/sampling-calibration/manifests/study.json \
+  --sampling-policy experiments/paper/runs/<run-id>/sampling-analysis/policy/sampling_policy.json \
+  --sampler-script scripts/sample_fastq.py \
+  --output-root experiments/paper/runs/<run-id>/evaluation-samples
+```
+
+Build the evaluation applicability inventory as above, but use the evaluation
+case-selection manifest. Materialize from the immutable sample bundle rather
+than the calibration study, then execute every condition:
+
+```bash
+python3 scripts/materialize_perturbations.py \
+  --perturbation-inventory experiments/paper/runs/<run-id>/evaluation-perturbation-inventory/manifests/perturbation_inventory.json \
+  --sample-bundle experiments/paper/runs/<run-id>/evaluation-samples/manifests/sample_bundle.json \
+  --sampling-policy experiments/paper/runs/<run-id>/sampling-analysis/policy/sampling_policy.json \
+  --perturbation-protocol experiments/paper/protocol/perturbations.json \
+  --seqspec-bin ../seqspec/target/release/seqspec \
+  --yq-bin "$(command -v yq)" \
+  --output-root experiments/paper/runs/<run-id>/evaluation-perturbations
+
+python3 scripts/run_perturbation_calibration.py \
+  --materialization-manifest experiments/paper/runs/<run-id>/evaluation-perturbations/manifests/materialization.json \
+  --execution-protocol experiments/paper/protocol/perturbation_execution.json \
+  --seqcheck-bin target/release/seqcheck \
+  --output-root experiments/paper/runs/<run-id>/evaluation-execution
+```
+
+Apply the frozen detection rules without fitting a new endpoint or threshold:
+
+```bash
+python3 scripts/evaluate_perturbation_execution.py \
+  --execution-manifest experiments/paper/runs/<run-id>/evaluation-execution/manifests/execution.json \
+  --detection-policy experiments/paper/runs/<run-id>/perturbation-analysis/policy/detection_policy.json \
+  --analysis-protocol experiments/paper/protocol/perturbation_analysis.json \
+  --output-root experiments/paper/runs/<run-id>/perturbation-evaluation
+```
+
+The evaluator rejects calibration samples, a policy derived from the evaluation
+execution, changed policy content, and evaluation variants absent from the
+frozen policy. It writes the five predeclared endpoints with deterministic
+configuration-cluster bootstrap intervals. A structurally valid evaluation is
+retained even when an endpoint is incomplete or a scientific target is missed.
+Conditions deliberately expected to fail `seqspec check`, such as S10, remain in
+the raw call and operator tables but are excluded from primary sensitivity and
+localization estimates.

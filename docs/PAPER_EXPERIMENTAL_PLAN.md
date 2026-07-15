@@ -428,6 +428,14 @@ must appear in at least 80% of seeds within a configuration and in at least 80%
 of independent configurations. These constants are frozen in
 `experiments/paper/protocol/perturbation_analysis.json`.
 
+After the policy is frozen, `scripts/sample_policy_cases.py` applies the frozen
+sampling method, record count, and seed to the evaluation split. Evaluation
+conditions are materialized from that content-addressed sample bundle.
+`scripts/evaluate_perturbation_execution.py` then applies the frozen detection
+policy without selecting a new metric, assessment code, process pattern, or
+threshold. It rejects calibration samples and evaluation variants that were not
+represented in the policy.
+
 For every evaluation condition, retain the raw metric response even when a binary
 threshold is not defensible. A perturbation is localized correctly only when the
 reported file, read, and region include the mutated target at every applicable
@@ -443,7 +451,9 @@ scope.
 
 Compute macro-averages across configurations. Use configuration-level cluster
 bootstrap intervals so repeated perturbations from one source do not inflate the
-sample size.
+sample size. The confidence level, resample count, and random seed are frozen in
+`experiments/paper/protocol/perturbation_analysis.json`. An incomplete endpoint
+or missed target remains a valid result and does not trigger policy refitting.
 
 ### Outputs
 

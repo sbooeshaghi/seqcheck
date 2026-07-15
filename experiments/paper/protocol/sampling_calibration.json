@@ -2,8 +2,14 @@
   "schema_version": "0.1.0",
   "experiment_id": "sampling-calibration",
   "cohort_limits": {
-    "configurations": 12,
-    "fastqs": 24
+    "calibration": {
+      "configurations": 12,
+      "fastqs": 24
+    },
+    "evaluation": {
+      "configurations": 18,
+      "fastqs": 36
+    }
   },
   "case_selection": {
     "max_fastqs_per_configuration": 2,

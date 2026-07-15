@@ -166,6 +166,7 @@ def create_inputs(root: Path) -> dict[str, Path]:
     stable_selection = {
         "schema_version": "0.1.0",
         "freeze_id": "freeze-test",
+        "cohort_split": "calibration",
         "cohort_sha256": "cohort-sha256-test",
         "sampling_protocol_sha256": MODULE.runtime.file_sha256(protocol),
         "selector": {"version": "0.1.0", "sha256": "selector-sha256-test"},

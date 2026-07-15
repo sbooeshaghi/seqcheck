@@ -26,7 +26,7 @@ MATERIALIZATION_IDENTITY_FIELDS = (
     "inventory_id",
     "study_run_id",
     "sampling_policy_id",
-    "sampling_study_sha256",
+    "sample_source",
     "base_samples",
     "perturbation_protocol_sha256",
     "seqspec",

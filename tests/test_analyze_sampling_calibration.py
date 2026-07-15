@@ -101,6 +101,7 @@ def analysis_protocol() -> dict[str, object]:
         "policy": {
             "preferred_records_per_fastq": 10000,
             "escalation_records_per_fastq": 100000,
+            "reservoir_seed": 17,
             "median_absolute_error_max": 0.01,
             "p95_absolute_error_max": 0.05,
             "prefix_bias_ci_lower_min": -0.01,
@@ -386,6 +387,7 @@ class AnalyzeSamplingCalibrationTests(unittest.TestCase):
         self.assertTrue(validation["valid"])
         self.assertTrue(policy["frozen"])
         self.assertTrue(policy["scientific_targets_met"])
+        self.assertIsNone(policy["default"]["sampling_seed"])
         self.assertEqual(validation["counts"]["selected_error_rows"], 48)
         self.assertEqual(validation["counts"]["case_accuracy_rows"], 24)
         self.assertEqual(validation["counts"]["case_bias_rows"], 12)
@@ -396,6 +398,33 @@ class AnalyzeSamplingCalibrationTests(unittest.TestCase):
             {
                 "stable_fraction": "default_prefix",
                 "escalating_fraction": "escalation_prefix",
+            },
+        )
+
+    def test_reservoir_policy_records_the_predeclared_seed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            protocol_path = Path(tmpdir) / "analysis.json"
+            write_json(protocol_path, analysis_protocol())
+            policy = MODULE.build_policy(
+                study_run_id="study",
+                analysis_run_id="analysis",
+                analysis_protocol_path=protocol_path,
+                analysis_protocol=analysis_protocol(),
+                decisions=[
+                    {
+                        "evidence_complete": True,
+                        "decision": "default_reservoir",
+                    }
+                ],
+                memory={"evaluable": True, "pass": True},
+            )
+
+        self.assertEqual(
+            policy["default"],
+            {
+                "records_per_fastq": 10000,
+                "sampling_method": "reservoir",
+                "sampling_seed": 17,
             },
         )
 

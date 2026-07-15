@@ -16,6 +16,11 @@
       "": 0.001
     }
   },
+  "statistics": {
+    "confidence_level": 0.95,
+    "bootstrap_resamples": 10000,
+    "bootstrap_seed": 20260714
+  },
   "scientific_targets": {
     "deterministic_sensitivity_min": 0.95,
     "clean_specificity_min": 0.95,
