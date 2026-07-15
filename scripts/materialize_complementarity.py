@@ -32,6 +32,23 @@ except ModuleNotFoundError:
 SCHEMA_VERSION = "0.1.0"
 MATERIALIZER_VERSION = "0.1.0"
 COHORT_SPLITS = ("calibration", "evaluation")
+MATERIALIZATION_IDENTITY_FIELDS = (
+    "schema_version",
+    "cohort_split",
+    "selection_id",
+    "base_materialization_id",
+    "base_materialization_sha256",
+    "protocol_sha256",
+    "quality_policy",
+    "seqspec",
+    "yq",
+    "materializer",
+    "control_runtime",
+    "perturbation_runtime",
+    "paper_runtime",
+    "controls",
+    "skips",
+)
 CONTROL_FIELDS = (
     "complementarity_id",
     "condition_id",

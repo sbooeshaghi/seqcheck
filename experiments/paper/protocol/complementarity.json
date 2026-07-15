@@ -98,6 +98,10 @@
     "extract": true,
     "status_order": ["pass", "warn", "fail"]
   },
+  "seqcheck": {
+    "n_reads": 0,
+    "format": "json"
+  },
   "statistics": {
     "confidence_level": 0.95,
     "bootstrap_resamples": 10000,

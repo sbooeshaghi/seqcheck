@@ -35,6 +35,13 @@ from pathlib import Path
 if sys.argv[1] == "--version":
     print("seqcheck 0.2.0-test")
     raise SystemExit(0)
+spec = json.loads(Path(sys.argv[sys.argv.index("--spec") + 1]).read_text())
+regions = list(spec.get("library_spec", []))
+if any(not value.get("region_id") for value in regions) or any(
+    value.get("min_len", 0) > value.get("max_len", 0) for value in regions
+):
+    print("seqspec is invalid", file=sys.stderr)
+    raise SystemExit(2)
 inputs = [Path(value) for value in sys.argv[sys.argv.index("--output") + 2:]]
 if any(value.name == "seqcheck_unexpected_input.fastq.gz" for value in inputs):
     print("could not match unexpected FASTQ", file=sys.stderr)
