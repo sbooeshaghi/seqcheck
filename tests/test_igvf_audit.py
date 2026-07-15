@@ -12,6 +12,13 @@ from unittest.mock import patch
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "igvf_audit.py"
+AUDIT_PROTOCOL_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "experiments"
+    / "paper"
+    / "protocol"
+    / "igvf_audit.json"
+)
 SPEC = importlib.util.spec_from_file_location("igvf_audit", SCRIPT_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -75,7 +82,7 @@ class IgvfAuditTests(unittest.TestCase):
             },
             "tools": {
                 "audit_runtime": {
-                    "version": "0.3.0",
+                    "version": "0.4.0",
                     "path": "/tmp/igvf_audit.py",
                     "sha256": "a" * 64,
                     "python": "3.12.0",
@@ -115,6 +122,10 @@ class IgvfAuditTests(unittest.TestCase):
             "policy_id": MODULE.sha256_json(stable)[:16],
             "created_at": "2026-07-14T12:00:00+00:00",
         }
+
+    @staticmethod
+    def audit_protocol() -> dict[str, object]:
+        return json.loads(AUDIT_PROTOCOL_PATH.read_text(encoding="utf-8"))
 
     @classmethod
     def audit_context(cls, run_id: str = "study-1") -> object:
@@ -191,11 +202,16 @@ class IgvfAuditTests(unittest.TestCase):
             root = Path(tmpdir)
             portal_path = root / "portal.json"
             policy_path = root / "sampling.json"
+            protocol_path = root / "protocol.json"
             portal_path.write_text(json.dumps(self.portal_manifest()), encoding="utf-8")
             policy_path.write_text(json.dumps(self.sampling_policy()), encoding="utf-8")
+            protocol_path.write_text(
+                json.dumps(self.audit_protocol()), encoding="utf-8"
+            )
             args = argparse.Namespace(
                 portal_manifest=portal_path,
                 sampling_policy=policy_path,
+                audit_protocol=protocol_path,
                 api_root="https://wrong.example/",
                 portal_root="https://wrong.example/",
                 status="in progress",
@@ -203,8 +219,8 @@ class IgvfAuditTests(unittest.TestCase):
                 n_reads=7,
             )
 
-            configurations, sequence_files, portal, policy = MODULE.load_audit_inputs(
-                args
+            configurations, sequence_files, portal, policy, protocol = (
+                MODULE.load_audit_inputs(args)
             )
 
         self.assertEqual(
@@ -215,9 +231,97 @@ class IgvfAuditTests(unittest.TestCase):
             portal["portal_manifest_id"], self.portal_manifest()["portal_manifest_id"]
         )
         self.assertEqual(policy["policy_id"], self.sampling_policy()["policy_id"])
+        self.assertEqual(protocol["execution"]["max_attempts"], 3)
         self.assertEqual(args.api_root, "https://api.example.org/")
         self.assertEqual(args.portal_root, "https://example.org/")
         self.assertEqual(args.n_reads, 10000)
+
+    def test_audit_protocol_validates_and_rejects_nontransport_retries(self) -> None:
+        protocol = MODULE.load_audit_protocol(AUDIT_PROTOCOL_PATH)
+        self.assertEqual(protocol["execution"]["max_attempts"], 3)
+        self.assertEqual(
+            MODULE.audit_protocol_id(protocol), MODULE.sha256_json(protocol)[:16]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "protocol.json"
+            protocol["execution"]["retryable_failure_categories"] = ["authentication"]
+            path.write_text(json.dumps(protocol), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "only transport"):
+                MODULE.load_audit_protocol(path)
+
+    def test_audit_command_retries_transport_but_not_authentication(self) -> None:
+        context = dataclasses.replace(
+            self.audit_context(),
+            command_timeout_seconds=30,
+            max_attempts=3,
+            retry_delays_seconds=(0, 0),
+        )
+        transport = subprocess.CalledProcessError(
+            1, ["tool"], stderr="HTTP 503 service unavailable"
+        )
+        success = subprocess.CompletedProcess(["tool"], 0, stdout="ok", stderr="")
+        with (
+            patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=[transport, transport, success],
+            ) as mocked,
+            patch.object(MODULE.time, "sleep") as sleep,
+        ):
+            completed, attempts = MODULE.run_audit_command(
+                ["tool"],
+                env={},
+                audit_context=context,
+                stage="seqcheck",
+                reason="seqcheck_error",
+            )
+
+        self.assertEqual(completed.stdout, "ok")
+        self.assertEqual(attempts, 3)
+        self.assertEqual(mocked.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+        authentication = subprocess.CalledProcessError(
+            1, ["tool"], stderr="HTTP 401 unauthorized"
+        )
+        with patch.object(
+            MODULE.subprocess, "run", side_effect=authentication
+        ) as mocked:
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                MODULE.run_audit_command(
+                    ["tool"],
+                    env={},
+                    audit_context=context,
+                    stage="seqcheck",
+                    reason="seqcheck_error",
+                )
+
+        self.assertEqual(mocked.call_count, 1)
+        self.assertEqual(MODULE.command_attempt_count(raised.exception), 1)
+
+    def test_audit_command_retries_timeouts(self) -> None:
+        context = dataclasses.replace(
+            self.audit_context(),
+            command_timeout_seconds=30,
+            max_attempts=2,
+            retry_delays_seconds=(0,),
+        )
+        timeout = subprocess.TimeoutExpired(["tool"], 30)
+        success = subprocess.CompletedProcess(["tool"], 0, stdout="ok", stderr="")
+        with (
+            patch.object(MODULE.subprocess, "run", side_effect=[timeout, success]),
+            patch.object(MODULE.time, "sleep"),
+        ):
+            _, attempts = MODULE.run_audit_command(
+                ["tool"],
+                env={},
+                audit_context=context,
+                stage="seqcheck",
+                reason="seqcheck_error",
+            )
+
+        self.assertEqual(attempts, 2)
 
     def test_classify_seqspec_failure_reason_marks_malformed_yaml(self) -> None:
         self.assertEqual(
@@ -308,6 +412,7 @@ class IgvfAuditTests(unittest.TestCase):
                 "cache_key": "cache-1",
                 "sampling_method": "prefix",
                 "sampling_seed": None,
+                "max_attempt_count": 2,
             },
             "results": [
                 {
@@ -420,6 +525,7 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertEqual(run.requested_reads_total, 10000)
         self.assertEqual(run.supplied_fastq_count, 1)
         self.assertEqual(run.sampled_record_count, 1)
+        self.assertEqual(run.max_attempt_count, 2)
         self.assertEqual(run.access_class, "public")
         self.assertEqual(run.study_run_id, "study-1")
         self.assertEqual(len(diagnostics), 3)
@@ -457,11 +563,13 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertEqual(
             annotated["audit_summary"],
             {
-                "audit_schema_version": "0.3.0",
+                "audit_schema_version": "0.4.0",
                 "study_run_id": "study-1",
                 "cache_key": "cache-1",
                 "sampling_method": "prefix",
                 "sampling_seed": None,
+                "audit_protocol_id": "",
+                "max_attempt_count": 1,
                 "audit_invocation": ["igvf_audit.py", "--limit", "1"],
                 "tools": {
                     "seqcheck": {
@@ -768,6 +876,7 @@ class IgvfAuditTests(unittest.TestCase):
     def test_study_manifest_hashes_frozen_inputs_without_hashing_paths(self) -> None:
         portal = self.portal_manifest()
         policy = self.sampling_policy()
+        protocol = self.audit_protocol()
         record = self.configuration_record()
         sequence = MODULE.SequenceFileRecord(
             accession="IGVFFI0001TEST",
@@ -806,13 +915,16 @@ class IgvfAuditTests(unittest.TestCase):
             for label in ("first", "second"):
                 portal_path = root / label / "portal.json"
                 policy_path = root / label / "policy.json"
+                protocol_path = root / label / "protocol.json"
                 portal_path.parent.mkdir(parents=True)
                 portal["retrieved_at"] = label
                 policy["created_at"] = label
                 portal_path.write_text(json.dumps(portal), encoding="utf-8")
                 policy_path.write_text(json.dumps(policy), encoding="utf-8")
+                protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
                 args.portal_manifest = portal_path
                 args.sampling_policy = policy_path
+                args.audit_protocol = protocol_path
                 contexts.append(
                     MODULE.write_study_manifest(
                         root / label / "audit",
@@ -826,6 +938,7 @@ class IgvfAuditTests(unittest.TestCase):
                         label,
                         portal_manifest=portal,
                         sampling_policy=policy,
+                        audit_protocol=protocol,
                     )
                 )
 
@@ -835,11 +948,16 @@ class IgvfAuditTests(unittest.TestCase):
 
         self.assertEqual(contexts[0].run_id, contexts[1].run_id)
         self.assertEqual(contexts[0].sampling_method, "prefix")
+        self.assertEqual(contexts[0].max_attempts, 3)
         self.assertEqual(
             manifest["inputs"]["portal_manifest"]["portal_manifest_id"],
             portal["portal_manifest_id"],
         )
         self.assertNotIn("path", manifest["frozen_inputs"]["portal_manifest"])
+        self.assertEqual(
+            manifest["inputs"]["audit_protocol"]["audit_protocol_id"],
+            MODULE.audit_protocol_id(protocol),
+        )
 
     def test_reconciliation_checks_each_report_and_rejects_orphans(self) -> None:
         record = self.configuration_record()
@@ -962,6 +1080,17 @@ class IgvfAuditTests(unittest.TestCase):
             )
             self.assertFalse(missing_version["checks"]["completed_versions_recorded"])
 
+            invalid_attempt = MODULE.reconcile_outputs(
+                output_root,
+                context,
+                [record],
+                [dataclasses.replace(run, max_attempt_count=2)],
+                diagnostics,
+                metrics,
+                [],
+            )
+            self.assertFalse(invalid_attempt["checks"]["attempt_counts_valid"])
+
             unclassified = MODULE.reconcile_outputs(
                 output_root,
                 context,
@@ -1009,6 +1138,7 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertIn("--fastqc-limits", completed.stdout)
         self.assertIn("--portal-manifest", completed.stdout)
         self.assertIn("--sampling-policy", completed.stdout)
+        self.assertIn("--audit-protocol", completed.stdout)
 
     def test_write_lab_summary_aggregates_runs_and_failures(self) -> None:
         runs = [

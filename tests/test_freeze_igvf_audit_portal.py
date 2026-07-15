@@ -119,7 +119,7 @@ class FreezeIgvfAuditPortalTests(unittest.TestCase):
         sequence = MODULE.audit.SequenceFileRecord("F", "/f", False, ["Read1"])
         tools = {
             "audit_runtime": {
-                "version": "0.3.0",
+                "version": "0.4.0",
                 "sha256": "a" * 64,
                 "python": "3.12.0",
             },

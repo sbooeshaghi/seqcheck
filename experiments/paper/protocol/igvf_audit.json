@@ -1,0 +1,27 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "current-igvf-audit",
+  "execution": {
+    "command_timeout_seconds": 600,
+    "max_attempts": 3,
+    "retry_delays_seconds": [
+      2,
+      10
+    ],
+    "retryable_failure_categories": [
+      "transport"
+    ]
+  },
+  "repeatability": {
+    "subset_run_count": 100,
+    "selection_seed": 20260714,
+    "canonical_excluded_top_level_fields": [
+      "audit_summary"
+    ]
+  },
+  "targets": {
+    "minimum_completion_fraction": 0.95,
+    "maximum_unclassified_failure_count": 0,
+    "required_repeat_match_fraction": 1.0
+  }
+}

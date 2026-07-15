@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.parse
@@ -29,9 +30,10 @@ from typing import Any
 USER_AGENT = "seqcheck-igvf-audit/0.1"
 DEFAULT_API_ROOT = "https://api.data.igvf.org/"
 DEFAULT_PORTAL_ROOT = DEFAULT_API_ROOT
-AUDIT_SCHEMA_VERSION = "0.3.0"
+AUDIT_SCHEMA_VERSION = "0.4.0"
 PORTAL_MANIFEST_SCHEMA_VERSION = "0.1.0"
 SAMPLING_POLICY_SCHEMA_VERSION = "0.1.0"
+AUDIT_PROTOCOL_SCHEMA_VERSION = "0.1.0"
 CURRENT_SEQSPEC_VERSION = "0.5.0"
 SAMPLING_METHOD = "prefix"
 ONTOLOGY_TERM_PATTERN = re.compile(r"RGN:[A-Za-z0-9_]+:[A-Za-z0-9_]+")
@@ -102,6 +104,7 @@ class RunRecord:
     warning_count: int
     error_count: int
     interpretation_count: int
+    max_attempt_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -212,6 +215,11 @@ class AuditContext:
     sampling_seed: int | None
     seqcheck: ToolIdentity
     seqspec: ToolIdentity
+    command_timeout_seconds: int | None = None
+    max_attempts: int = 1
+    retry_delays_seconds: tuple[float, ...] = ()
+    retryable_failure_categories: tuple[str, ...] = ("transport",)
+    audit_protocol_id: str = ""
 
 
 def parse_args() -> argparse.Namespace:
@@ -257,6 +265,11 @@ def parse_args() -> argparse.Namespace:
         "--sampling-policy",
         type=Path,
         help="Frozen Experiment 1 sampling policy; currently must select prefix sampling.",
+    )
+    parser.add_argument(
+        "--audit-protocol",
+        type=Path,
+        help="Versioned retry, repeatability, and completion rules for the paper audit.",
     )
     parser.add_argument(
         "--public-only",
@@ -328,7 +341,7 @@ def main() -> int:
     )
 
     try:
-        configurations, sequence_files, portal_manifest, sampling_policy = (
+        configurations, sequence_files, portal_manifest, sampling_policy, audit_protocol = (
             load_audit_inputs(args)
         )
     except (OSError, ValueError) as err:
@@ -363,6 +376,7 @@ def main() -> int:
         started_at,
         portal_manifest=portal_manifest,
         sampling_policy=sampling_policy,
+        audit_protocol=audit_protocol,
     )
 
     print(
@@ -500,6 +514,7 @@ def load_audit_inputs(
     dict[str, SequenceFileRecord],
     dict[str, Any] | None,
     dict[str, Any] | None,
+    dict[str, Any] | None,
 ]:
     portal_manifest = None
     if args.portal_manifest:
@@ -527,7 +542,17 @@ def load_audit_inputs(
     if args.sampling_policy:
         sampling_policy = load_frozen_sampling_policy(args.sampling_policy.resolve())
         args.n_reads = sampling_policy["default"]["records_per_fastq"]
-    return configurations, sequence_files, portal_manifest, sampling_policy
+    audit_protocol = None
+    audit_protocol_path = getattr(args, "audit_protocol", None)
+    if audit_protocol_path:
+        audit_protocol = load_audit_protocol(audit_protocol_path.resolve())
+    return (
+        configurations,
+        sequence_files,
+        portal_manifest,
+        sampling_policy,
+        audit_protocol,
+    )
 
 
 def process_configuration(
@@ -579,11 +604,12 @@ def process_configuration(
     spec_url = absolute_url(portal_root, record.href)
 
     try:
-        raw_seqspec_version = get_seqspec_file_version(
+        raw_seqspec_version, configuration_max_attempt_count = get_seqspec_file_version(
             seqspec_cmd,
             spec_url,
             seqspec_auth_profile,
             mpl_dir,
+            audit_context,
         )
     except subprocess.CalledProcessError as err:
         message = stderr_message(err)
@@ -601,6 +627,7 @@ def process_configuration(
                 ),
                 message=message,
                 access_class=configuration_access_class,
+                attempt_count=command_attempt_count(err),
             )
         )
         return runs, diagnostics, metrics, failures
@@ -608,11 +635,12 @@ def process_configuration(
     normalized_seqspec_version = normalize_seqspec_version(raw_seqspec_version)
 
     try:
-        modalities = list_modalities(
+        modalities, modality_list_attempt_count = list_modalities(
             seqspec_cmd,
             spec_url,
             seqspec_auth_profile,
             mpl_dir,
+            audit_context,
         )
     except subprocess.CalledProcessError as err:
         message = stderr_message(err)
@@ -630,9 +658,14 @@ def process_configuration(
                 ),
                 message=message,
                 access_class=configuration_access_class,
+                attempt_count=command_attempt_count(err),
             )
         )
         return runs, diagnostics, metrics, failures
+
+    configuration_max_attempt_count = max(
+        configuration_max_attempt_count, modality_list_attempt_count
+    )
 
     if not modalities:
         failures.append(
@@ -653,16 +686,18 @@ def process_configuration(
     modality_count = len(modalities)
 
     for modality in modalities:
+        modality_max_attempt_count = configuration_max_attempt_count
         report_path = output_root / "reports" / record.accession / f"{slugify(modality)}.json"
         report_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            region_annotations = list_modality_region_annotations(
+            region_annotations, region_attempt_count = list_modality_region_annotations(
                 seqspec_cmd,
                 spec_url,
                 modality,
                 seqspec_auth_profile,
                 mpl_dir,
+                audit_context,
             )
         except (subprocess.CalledProcessError, ValueError) as err:
             message = stderr_message(err) if isinstance(
@@ -682,17 +717,26 @@ def process_configuration(
                     ),
                     message=message,
                     access_class=configuration_access_class,
+                    attempt_count=(
+                        command_attempt_count(err)
+                        if isinstance(err, subprocess.CalledProcessError)
+                        else 1
+                    ),
                 )
             )
             continue
+        modality_max_attempt_count = max(
+            modality_max_attempt_count, region_attempt_count
+        )
 
         try:
-            expected_files = list_modality_files(
+            expected_files, file_attempt_count = list_modality_files(
                 seqspec_cmd,
                 spec_url,
                 modality,
                 seqspec_auth_profile,
                 mpl_dir,
+                audit_context,
             )
         except subprocess.CalledProcessError as err:
             message = stderr_message(err)
@@ -710,9 +754,13 @@ def process_configuration(
                     ),
                     message=message,
                     access_class=configuration_access_class,
+                    attempt_count=command_attempt_count(err),
                 )
             )
             continue
+        modality_max_attempt_count = max(
+            modality_max_attempt_count, file_attempt_count
+        )
 
         fastq_expectations = [item for item in expected_files if is_fastq_expectation(item)]
         if not fastq_expectations:
@@ -845,7 +893,7 @@ def process_configuration(
                 continue
 
         try:
-            run_seqcheck(
+            seqcheck_attempt_count = run_seqcheck(
                 seqcheck_cmd,
                 spec_url,
                 modality,
@@ -853,6 +901,7 @@ def process_configuration(
                 fastq_urls,
                 report_path,
                 seqcheck_auth_profile,
+                audit_context,
             )
             report = json.loads(report_path.read_text(encoding="utf-8"))
             report = annotate_report_summary(
@@ -866,6 +915,9 @@ def process_configuration(
                 audit_context=audit_context,
                 cache_key=cache_key,
                 access_class=modality_access_class,
+                max_attempt_count=max(
+                    modality_max_attempt_count, seqcheck_attempt_count
+                ),
             )
             report_path.write_text(
                 json.dumps(report, indent=2, sort_keys=False) + "\n",
@@ -883,6 +935,7 @@ def process_configuration(
                     reason="seqcheck_error",
                     message=stderr_message(err),
                     access_class=modality_access_class,
+                    attempt_count=command_attempt_count(err),
                 )
             )
             continue
@@ -1144,6 +1197,108 @@ def load_frozen_sampling_policy(path: Path) -> dict[str, Any]:
     return value
 
 
+def load_audit_protocol(path: Path) -> dict[str, Any]:
+    value = load_json_object(path, "audit protocol")
+    if value.get("schema_version") != AUDIT_PROTOCOL_SCHEMA_VERSION:
+        raise ValueError(
+            f"unsupported audit protocol schema: {value.get('schema_version', '')}"
+        )
+    expected_fields = {
+        "schema_version",
+        "experiment_id",
+        "execution",
+        "repeatability",
+        "targets",
+    }
+    if set(value) != expected_fields or value.get("experiment_id") != (
+        "current-igvf-audit"
+    ):
+        raise ValueError("audit protocol fields or experiment ID are invalid")
+
+    execution = value.get("execution")
+    execution_fields = {
+        "command_timeout_seconds",
+        "max_attempts",
+        "retry_delays_seconds",
+        "retryable_failure_categories",
+    }
+    if not isinstance(execution, dict) or set(execution) != execution_fields:
+        raise ValueError("audit protocol execution rules are incomplete")
+    timeout = execution["command_timeout_seconds"]
+    attempts = execution["max_attempts"]
+    delays = execution["retry_delays_seconds"]
+    categories = execution["retryable_failure_categories"]
+    if not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0:
+        raise ValueError("audit protocol timeout must be a positive integer")
+    if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts <= 0:
+        raise ValueError("audit protocol max_attempts must be a positive integer")
+    if (
+        not isinstance(delays, list)
+        or len(delays) != attempts - 1
+        or any(
+            isinstance(delay, bool)
+            or not isinstance(delay, (int, float))
+            or delay < 0
+            for delay in delays
+        )
+    ):
+        raise ValueError(
+            "audit protocol needs one nonnegative retry delay per retry"
+        )
+    if categories != ["transport"]:
+        raise ValueError("audit protocol may retry only transport failures")
+
+    repeatability = value.get("repeatability")
+    repeatability_fields = {
+        "subset_run_count",
+        "selection_seed",
+        "canonical_excluded_top_level_fields",
+    }
+    if not isinstance(repeatability, dict) or set(repeatability) != repeatability_fields:
+        raise ValueError("audit protocol repeatability rules are incomplete")
+    subset_count = repeatability["subset_run_count"]
+    seed = repeatability["selection_seed"]
+    excluded = repeatability["canonical_excluded_top_level_fields"]
+    if (
+        not isinstance(subset_count, int)
+        or isinstance(subset_count, bool)
+        or subset_count <= 0
+        or not isinstance(seed, int)
+        or isinstance(seed, bool)
+        or not isinstance(excluded, list)
+        or not excluded
+        or any(not isinstance(field, str) or not field for field in excluded)
+    ):
+        raise ValueError("audit protocol repeatability values are invalid")
+
+    targets = value.get("targets")
+    if not isinstance(targets, dict) or set(targets) != {
+        "minimum_completion_fraction",
+        "maximum_unclassified_failure_count",
+        "required_repeat_match_fraction",
+    }:
+        raise ValueError("audit protocol targets are incomplete")
+    fractions = (
+        targets["minimum_completion_fraction"],
+        targets["required_repeat_match_fraction"],
+    )
+    if any(
+        isinstance(fraction, bool)
+        or not isinstance(fraction, (int, float))
+        or not 0 <= fraction <= 1
+        for fraction in fractions
+    ) or (
+        isinstance(targets["maximum_unclassified_failure_count"], bool)
+        or targets["maximum_unclassified_failure_count"] != 0
+    ):
+        raise ValueError("audit protocol target values are invalid")
+    return value
+
+
+def audit_protocol_id(value: dict[str, Any]) -> str:
+    return sha256_json(value)[:16]
+
+
 def command_output(command: list[str], env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         command,
@@ -1207,6 +1362,7 @@ def write_study_manifest(
     *,
     portal_manifest: dict[str, Any] | None = None,
     sampling_policy: dict[str, Any] | None = None,
+    audit_protocol: dict[str, Any] | None = None,
 ) -> AuditContext:
     linked_accessions = {
         accession
@@ -1228,15 +1384,28 @@ def write_study_manifest(
         if sampling_policy is not None
         else None
     )
+    execution = (
+        audit_protocol["execution"]
+        if audit_protocol is not None
+        else {
+            "command_timeout_seconds": None,
+            "max_attempts": 1,
+            "retry_delays_seconds": [],
+            "retryable_failure_categories": ["transport"],
+        }
+    )
+    protocol_id = audit_protocol_id(audit_protocol) if audit_protocol else ""
     frozen_inputs, input_provenance = build_frozen_input_identities(
         args,
         portal_manifest,
         sampling_policy,
+        audit_protocol,
     )
     stable_manifest = {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "sampling_method": sampling_method,
         "sampling_seed": sampling_seed,
+        "execution": execution,
         "query": {
             "api_root": args.api_root,
             "portal_root": args.portal_root,
@@ -1279,6 +1448,13 @@ def write_study_manifest(
         sampling_seed=sampling_seed,
         seqcheck=seqcheck_identity,
         seqspec=seqspec_identity,
+        command_timeout_seconds=execution["command_timeout_seconds"],
+        max_attempts=execution["max_attempts"],
+        retry_delays_seconds=tuple(execution["retry_delays_seconds"]),
+        retryable_failure_categories=tuple(
+            execution["retryable_failure_categories"]
+        ),
+        audit_protocol_id=protocol_id,
     )
     manifest = {
         **stable_manifest,
@@ -1303,6 +1479,7 @@ def build_frozen_input_identities(
     args: argparse.Namespace,
     portal_manifest: dict[str, Any] | None,
     sampling_policy: dict[str, Any] | None,
+    audit_protocol: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     stable: dict[str, Any] = {}
     provenance: dict[str, Any] = {}
@@ -1341,6 +1518,23 @@ def build_frozen_input_identities(
     else:
         stable["sampling_policy"] = {"mode": "command_line"}
         provenance["sampling_policy"] = {"mode": "command_line"}
+
+    protocol_path = getattr(args, "audit_protocol", None)
+    if audit_protocol is not None:
+        if protocol_path is None:
+            raise ValueError("audit protocol path is required for provenance")
+        protocol_path = Path(protocol_path).resolve()
+        stable["audit_protocol"] = {
+            "audit_protocol_id": audit_protocol_id(audit_protocol),
+            "stable_sha256": sha256_json(audit_protocol),
+        }
+        provenance["audit_protocol"] = {
+            **file_identity(protocol_path),
+            **stable["audit_protocol"],
+        }
+    else:
+        stable["audit_protocol"] = {"mode": "command_line_defaults"}
+        provenance["audit_protocol"] = {"mode": "command_line_defaults"}
     return stable, provenance
 
 
@@ -1620,21 +1814,22 @@ def get_seqspec_file_version(
     spec_source: str,
     auth_profile: str | None,
     mpl_dir: Path,
-) -> str:
+    audit_context: AuditContext,
+) -> tuple[str, int]:
     env = os.environ.copy()
     env.update(command.env)
     env["MPLCONFIGDIR"] = str(mpl_dir)
     argv = command.argv + ["version", spec_source]
     if auth_profile:
         argv.extend(["--auth-profile", auth_profile])
-    result = subprocess.run(
+    result, attempts = run_audit_command(
         argv,
-        check=True,
-        capture_output=True,
-        text=True,
         env=env,
+        audit_context=audit_context,
+        stage="seqspec_version",
+        reason="seqspec_version_error",
     )
-    return parse_seqspec_version_output(result.stdout)
+    return parse_seqspec_version_output(result.stdout), attempts
 
 
 def list_modality_files(
@@ -1643,7 +1838,8 @@ def list_modality_files(
     modality: str,
     auth_profile: str | None,
     mpl_dir: Path,
-) -> list[dict[str, Any]]:
+    audit_context: AuditContext,
+) -> tuple[list[dict[str, Any]], int]:
     env = os.environ.copy()
     env.update(command.env)
     env["MPLCONFIGDIR"] = str(mpl_dir)
@@ -1661,14 +1857,14 @@ def list_modality_files(
     ]
     if auth_profile:
         argv.extend(["--auth-profile", auth_profile])
-    result = subprocess.run(
+    result, attempts = run_audit_command(
         argv,
-        check=True,
-        capture_output=True,
-        text=True,
         env=env,
+        audit_context=audit_context,
+        stage="enumerate_files",
+        reason="seqspec_file_error",
     )
-    return json.loads(result.stdout)
+    return json.loads(result.stdout), attempts
 
 
 def list_modalities(
@@ -1676,22 +1872,23 @@ def list_modalities(
     spec_source: str,
     auth_profile: str | None,
     mpl_dir: Path,
-) -> list[str]:
+    audit_context: AuditContext,
+) -> tuple[list[str], int]:
     env = os.environ.copy()
     env.update(command.env)
     env["MPLCONFIGDIR"] = str(mpl_dir)
     argv = command.argv + ["info", "-k", "modalities", "-f", "json", spec_source]
     if auth_profile:
         argv.extend(["--auth-profile", auth_profile])
-    result = subprocess.run(
+    result, attempts = run_audit_command(
         argv,
-        check=True,
-        capture_output=True,
-        text=True,
         env=env,
+        audit_context=audit_context,
+        stage="enumerate_modalities",
+        reason="seqspec_info_error",
     )
     payload = json.loads(result.stdout)
-    return [str(item) for item in payload]
+    return [str(item) for item in payload], attempts
 
 
 def list_modality_region_annotations(
@@ -1700,7 +1897,8 @@ def list_modality_region_annotations(
     modality: str,
     auth_profile: str | None,
     mpl_dir: Path,
-) -> dict[str, dict[str, Any]]:
+    audit_context: AuditContext,
+) -> tuple[dict[str, dict[str, Any]], int]:
     env = os.environ.copy()
     env.update(command.env)
     env["MPLCONFIGDIR"] = str(mpl_dir)
@@ -1714,17 +1912,17 @@ def list_modality_region_annotations(
     ]
     if auth_profile:
         argv.extend(["--auth-profile", auth_profile])
-    result = subprocess.run(
+    result, attempts = run_audit_command(
         argv,
-        check=True,
-        capture_output=True,
-        text=True,
         env=env,
+        audit_context=audit_context,
+        stage="enumerate_regions",
+        reason="seqspec_region_error",
     )
     payload = json.loads(result.stdout)
     if not isinstance(payload, dict) or not isinstance(payload.get(modality), list):
         raise ValueError(f"seqspec has no region list for modality: {modality}")
-    return index_region_annotations(payload[modality])
+    return index_region_annotations(payload[modality]), attempts
 
 
 def index_region_annotations(
@@ -1793,7 +1991,8 @@ def run_seqcheck(
     fastqs: list[str],
     report_path: Path,
     auth_profile: str | None,
-) -> None:
+    audit_context: AuditContext,
+) -> int:
     env = os.environ.copy()
     env.update(command.env)
     argv = command.argv + [
@@ -1812,13 +2011,66 @@ def run_seqcheck(
     if auth_profile:
         argv.extend(["--auth-profile", auth_profile])
     argv.extend(fastqs)
-    subprocess.run(
+    _, attempts = run_audit_command(
         argv,
-        check=True,
-        capture_output=True,
-        text=True,
         env=env,
+        audit_context=audit_context,
+        stage="seqcheck",
+        reason="seqcheck_error",
     )
+    return attempts
+
+
+def run_audit_command(
+    argv: list[str],
+    *,
+    env: dict[str, str],
+    audit_context: AuditContext,
+    stage: str,
+    reason: str,
+) -> tuple[subprocess.CompletedProcess[str], int]:
+    for attempt in range(1, audit_context.max_attempts + 1):
+        try:
+            completed = subprocess.run(
+                argv,
+                check=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                timeout=audit_context.command_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as timeout:
+            error = subprocess.CalledProcessError(
+                returncode=124,
+                cmd=argv,
+                output=timeout.stdout or "",
+                stderr=(
+                    f"command timed out after "
+                    f"{audit_context.command_timeout_seconds} seconds"
+                ),
+            )
+        except subprocess.CalledProcessError as called:
+            error = called
+        else:
+            return completed, attempt
+
+        message = stderr_message(error)
+        category = classify_failure_category(stage, reason, message)
+        should_retry = (
+            attempt < audit_context.max_attempts
+            and category in audit_context.retryable_failure_categories
+        )
+        if should_retry:
+            time.sleep(audit_context.retry_delays_seconds[attempt - 1])
+            continue
+        error.attempt_count = attempt
+        raise error
+    raise AssertionError("unreachable retry loop")
+
+
+def command_attempt_count(error: subprocess.CalledProcessError) -> int:
+    value = getattr(error, "attempt_count", 1)
+    return value if isinstance(value, int) and value > 0 else 1
 
 
 def resolve_ready_auth_profile(
@@ -1949,6 +2201,7 @@ def flatten_report(
         warning_count=counts["warning"],
         error_count=counts["error"],
         interpretation_count=counts["interpretation"],
+        max_attempt_count=int(audit_summary.get("max_attempt_count", 0)),
     )
 
     diagnostics = []
@@ -2121,11 +2374,18 @@ def annotate_report_summary(
     audit_context: AuditContext,
     cache_key: str,
     access_class: str | None = None,
+    max_attempt_count: int | None = None,
 ) -> dict[str, Any]:
     requested_reads = int(report.get("meta", {}).get("requested_reads", 0))
     sampled_record_count = infer_sampled_record_count(report)
     resolved_access_class = access_class or (
         "controlled" if controlled_access else "public"
+    )
+    previous_summary = report.get("audit_summary", {})
+    resolved_max_attempt_count = (
+        int(previous_summary.get("max_attempt_count", 1))
+        if max_attempt_count is None
+        else max_attempt_count
     )
     report["audit_summary"] = {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
@@ -2133,6 +2393,8 @@ def annotate_report_summary(
         "cache_key": cache_key,
         "sampling_method": audit_context.sampling_method,
         "sampling_seed": audit_context.sampling_seed,
+        "audit_protocol_id": audit_context.audit_protocol_id,
+        "max_attempt_count": resolved_max_attempt_count,
         "audit_invocation": sys.argv,
         "tools": {
             "seqcheck": asdict(audit_context.seqcheck),
@@ -2219,10 +2481,17 @@ def classify_failure_category(stage: str, reason: str, message: str) -> str:
             "temporary failure",
             "name or service not known",
             "could not resolve host",
+            "failed to send http request",
+            "error sending request",
+            "dns error",
             "http 500",
             "http 502",
             "http 503",
             "http 504",
+            "500 internal server error",
+            "502 bad gateway",
+            "503 service unavailable",
+            "504 gateway timeout",
         )
     ):
         return "transport"
@@ -2325,6 +2594,8 @@ def reconcile_outputs(
             summary.get("study_run_id") != audit_context.run_id
             or summary.get("cache_key") != run.cache_key
             or summary.get("access_class") != run.access_class
+            or summary.get("max_attempt_count") != run.max_attempt_count
+            or summary.get("audit_protocol_id") != audit_context.audit_protocol_id
             or not report_cache_matches(report, run.cache_key)
         ):
             report_identity_errors.append(str(path))
@@ -2393,6 +2664,17 @@ def reconcile_outputs(
         "unclassified_failures_absent": all(
             row.failure_category != "unclassified" for row in failures
         ),
+        "attempt_counts_valid": (
+            all(
+                (row.run_status == "cached" and row.max_attempt_count >= 0)
+                or 1 <= row.max_attempt_count <= audit_context.max_attempts
+                for row in runs
+            )
+            and all(
+                1 <= row.attempt_count <= audit_context.max_attempts
+                for row in failures
+            )
+        ),
         "catalog_reports_exist": not (catalog_reports - actual_reports),
         "no_orphan_reports": not (actual_reports - catalog_reports),
         "reports_parse": not report_parse_errors,
@@ -2432,6 +2714,12 @@ def reconcile_outputs(
             ),
             "failures_by_category": dict(
                 sorted(Counter(row.failure_category for row in failures).items())
+            ),
+            "runs_by_max_attempt_count": dict(
+                sorted(Counter(row.max_attempt_count for row in runs).items())
+            ),
+            "failures_by_attempt_count": dict(
+                sorted(Counter(row.attempt_count for row in failures).items())
             ),
             "diagnostics": len(diagnostics),
             "expected_assessments": expected_assessment_count,
