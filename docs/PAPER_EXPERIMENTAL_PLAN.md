@@ -147,13 +147,15 @@ different selection identifier.
 
 Reviewers follow `docs/COHORT_REVIEW_PROTOCOL.md`.
 `scripts/manage_cohort_reviews.py` creates two independent, content-addressed
-review packages and merges only complete sheets from distinct reviewers. The
-merge verifies copied evidence against the candidate table and reconstructs the
-combined table from the authoritative candidate rows. After both reviews and
-any adjudication are locked, `scripts/freeze_cohort.py` reconciles the final
-review table to the candidate manifest and assigns the seeded 12/18 split. The
-command writes no frozen cohort when any review, baseline check, family quota,
-or deduplication rule fails.
+review packages. Each package includes instructions, the review protocol,
+normalized specs, correction evidence, and portable content identities. The
+merge accepts only complete sheets from distinct reviewers, verifies the
+packaged materials and copied evidence against the candidate table, and
+reconstructs the combined table from the authoritative candidate rows. After
+both reviews and any adjudication are locked, `scripts/freeze_cohort.py`
+reconciles the final review table to the candidate manifest and assigns the
+seeded 12/18 split. The command writes no frozen cohort when any review,
+baseline check, family quota, or deduplication rule fails.
 
 Two configurations from each family will form a 12-configuration calibration
 set. The remaining 18 configurations will be locked before thresholds are chosen

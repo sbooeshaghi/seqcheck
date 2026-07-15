@@ -17,7 +17,9 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
-FREEZE_SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "freeze_cohort.py"
+FREEZE_SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "freeze_cohort.py"
+)
 FREEZE_SPEC = importlib.util.spec_from_file_location(
     "freeze_cohort_for_review_test", FREEZE_SCRIPT_PATH
 )
@@ -34,8 +36,8 @@ def candidate(accession: str, family: str = "rna") -> dict[str, str]:
         "configuration_accession": accession,
         "configuration_url": f"https://example.org/{accession}",
         "lab": "Lab A" if accession == "C1" else "Lab B",
-        "normalized_spec_path": f"/specs/{accession}.yaml",
-        "normalized_spec_sha256": f"normalized-{accession}",
+        "normalized_spec_path": "",
+        "normalized_spec_sha256": "",
         "structural_check_status": "passed",
         "resource_check_status": "passed",
         "fastq_mapping_status": "matched",
@@ -61,6 +63,16 @@ def read_csv(path: Path) -> tuple[list[dict[str, str]], list[str]]:
 
 def make_candidate_source(root: Path) -> tuple[Path, Path, list[dict[str, str]]]:
     rows = [candidate("C1"), candidate("C2", "atac")]
+    spec_root = root / "specs"
+    spec_root.mkdir()
+    for row in rows:
+        spec_path = spec_root / f"{row['configuration_accession']}.yaml"
+        spec_path.write_text(
+            f"seqspec_version: 0.5.0\nname: {row['configuration_accession']}\n",
+            encoding="utf-8",
+        )
+        row["normalized_spec_path"] = str(spec_path)
+        row["normalized_spec_sha256"] = MODULE.file_sha256(spec_path)
     candidates_path = root / "candidates.csv"
     manifest_path = root / "candidate_manifest.json"
     write_csv(candidates_path, rows)
@@ -81,6 +93,19 @@ def make_candidate_source(root: Path) -> tuple[Path, Path, list[dict[str, str]]]
 def make_correction_registry(root: Path) -> Path:
     correction_dir = root / "corrections" / "C1"
     correction_dir.mkdir(parents=True)
+    original_path = correction_dir / "original.yaml"
+    corrected_path = correction_dir / "corrected.yaml"
+    diff_path = correction_dir / "correction.diff"
+    original_path.write_bytes((root / "specs" / "C1.yaml").read_bytes())
+    corrected_path.write_text(
+        "seqspec_version: 0.5.0\nname: C1\ncorrection: true\n",
+        encoding="utf-8",
+    )
+    diff_path.write_text(
+        "--- original.yaml\n+++ corrected.yaml\n@@ -1,2 +1,3 @@\n"
+        " seqspec_version: 0.5.0\n name: C1\n+correction: true\n",
+        encoding="utf-8",
+    )
     correction_path = correction_dir / "correction.json"
     correction_path.write_text(
         json.dumps(
@@ -91,6 +116,18 @@ def make_correction_registry(root: Path) -> Path:
                 "family_id": "rna",
                 "configuration_accession": "C1",
                 "rationale": "Add the omitted index read.",
+                "original": {
+                    "path": "original.yaml",
+                    "sha256": MODULE.file_sha256(original_path),
+                },
+                "corrected": {
+                    "path": "corrected.yaml",
+                    "sha256": MODULE.file_sha256(corrected_path),
+                },
+                "diff": {
+                    "path": "correction.diff",
+                    "sha256": MODULE.file_sha256(diff_path),
+                },
                 "approval": {
                     "reviewer_1": "",
                     "reviewer_1_decision": "",
@@ -164,9 +201,7 @@ class ManageCohortReviewsTests(unittest.TestCase):
                 sheet = output_root / f"reviewer_{slot}" / "cohort_review.csv"
                 package = json.loads(
                     (
-                        output_root
-                        / f"reviewer_{slot}"
-                        / "review_package.json"
+                        output_root / f"reviewer_{slot}" / "review_package.json"
                     ).read_text()
                 )
                 rows, fields = read_csv(sheet)
@@ -186,8 +221,26 @@ class ManageCohortReviewsTests(unittest.TestCase):
                     fields[-len(MODULE.REVIEW_INPUT_FIELDS) :],
                     list(MODULE.REVIEW_INPUT_FIELDS),
                 )
-                self.assertFalse(any("reviewer_1_decision" == field for field in fields))
-                self.assertFalse(any("reviewer_2_decision" == field for field in fields))
+                self.assertFalse(
+                    any("reviewer_1_decision" == field for field in fields)
+                )
+                self.assertFalse(
+                    any("reviewer_2_decision" == field for field in fields)
+                )
+                package_root = output_root / f"reviewer_{slot}"
+                self.assertTrue((package_root / "INSTRUCTIONS.md").is_file())
+                self.assertTrue((package_root / "REVIEW_PROTOCOL.md").is_file())
+                self.assertEqual(
+                    sorted(
+                        path.name
+                        for path in (package_root / "evidence" / "specs").iterdir()
+                    ),
+                    ["C1.yaml", "C2.yaml"],
+                )
+                for identity in MODULE.iter_file_identities(
+                    package["review_materials"]
+                ):
+                    self.assertFalse(Path(identity["path"]).is_absolute())
 
             with self.assertRaisesRegex(ValueError, "refusing to overwrite"):
                 MODULE.prepare_review_packages(
@@ -288,11 +341,23 @@ class ManageCohortReviewsTests(unittest.TestCase):
             sheet_1 = packages / "reviewer_1" / "cohort_review.csv"
             sheet_2 = packages / "reviewer_2" / "cohort_review.csv"
             rows, fields = read_csv(sheet_1)
-            self.assertTrue(rows[0]["proposed_correction_manifest"].endswith(
-                "C1/correction.json"
-            ))
+            self.assertTrue(
+                rows[0]["proposed_correction_manifest"].endswith("C1/correction.json")
+            )
             self.assertTrue(rows[0]["proposed_correction_sha256"])
             self.assertEqual(rows[1]["proposed_correction_manifest"], "")
+            correction_root = (
+                packages / "reviewer_1" / "evidence" / "corrections" / "rna" / "C1"
+            )
+            self.assertEqual(
+                sorted(path.name for path in correction_root.iterdir()),
+                [
+                    "corrected.yaml",
+                    "correction.diff",
+                    "correction.json",
+                    "original.yaml",
+                ],
+            )
             complete_sheet(sheet_1, "Reviewer A")
             complete_sheet(sheet_2, "Reviewer B")
 
@@ -300,13 +365,9 @@ class ManageCohortReviewsTests(unittest.TestCase):
             MODULE.merge_review_packages(
                 candidate_manifest_path=manifest_path,
                 candidate_path=None,
-                reviewer_1_package=packages
-                / "reviewer_1"
-                / "review_package.json",
+                reviewer_1_package=packages / "reviewer_1" / "review_package.json",
                 reviewer_1_sheet=sheet_1,
-                reviewer_2_package=packages
-                / "reviewer_2"
-                / "review_package.json",
+                reviewer_2_package=packages / "reviewer_2" / "review_package.json",
                 reviewer_2_sheet=sheet_2,
                 output_root=merged_root,
                 correction_registry_path=registry_path,
@@ -325,16 +386,72 @@ class ManageCohortReviewsTests(unittest.TestCase):
                 MODULE.merge_review_packages(
                     candidate_manifest_path=manifest_path,
                     candidate_path=None,
-                    reviewer_1_package=packages
-                    / "reviewer_1"
-                    / "review_package.json",
+                    reviewer_1_package=packages / "reviewer_1" / "review_package.json",
                     reviewer_1_sheet=sheet_1,
-                    reviewer_2_package=packages
-                    / "reviewer_2"
-                    / "review_package.json",
+                    reviewer_2_package=packages / "reviewer_2" / "review_package.json",
                     reviewer_2_sheet=sheet_2,
                     output_root=tampered_root,
                     correction_registry_path=registry_path,
+                )
+
+    def test_merge_rejects_tampered_packaged_review_material(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest_path, _, _ = make_candidate_source(root)
+            packages = root / "packages"
+            MODULE.prepare_review_packages(
+                candidate_manifest_path=manifest_path,
+                candidate_path=None,
+                output_root=packages,
+            )
+            sheet_1 = packages / "reviewer_1" / "cohort_review.csv"
+            sheet_2 = packages / "reviewer_2" / "cohort_review.csv"
+            complete_sheet(sheet_1, "Reviewer A")
+            complete_sheet(sheet_2, "Reviewer B")
+            (packages / "reviewer_1" / "evidence" / "specs" / "C1.yaml").write_text(
+                "changed\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "review material hash changed"):
+                self.merge(root, manifest_path, packages)
+
+    def test_merge_rejects_symlinked_packaged_review_material(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest_path, _, _ = make_candidate_source(root)
+            packages = root / "packages"
+            MODULE.prepare_review_packages(
+                candidate_manifest_path=manifest_path,
+                candidate_path=None,
+                output_root=packages,
+            )
+            sheet_1 = packages / "reviewer_1" / "cohort_review.csv"
+            sheet_2 = packages / "reviewer_2" / "cohort_review.csv"
+            complete_sheet(sheet_1, "Reviewer A")
+            complete_sheet(sheet_2, "Reviewer B")
+            package_root = packages / "reviewer_1"
+            spec_path = package_root / "evidence" / "specs" / "C1.yaml"
+            backup_path = package_root / "same-spec.yaml"
+            backup_path.write_bytes(spec_path.read_bytes())
+            spec_path.unlink()
+            spec_path.symlink_to(backup_path)
+
+            with self.assertRaisesRegex(ValueError, "review material is missing"):
+                self.merge(root, manifest_path, packages)
+
+    def test_prepare_rejects_unsafe_package_path_component(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest_path, candidate_path, _ = make_candidate_source(root)
+            rows, fields = read_csv(candidate_path)
+            rows[0]["configuration_accession"] = ".."
+            write_csv(candidate_path, rows, fields)
+
+            with self.assertRaisesRegex(ValueError, "not safe"):
+                MODULE.prepare_review_packages(
+                    candidate_manifest_path=manifest_path,
+                    candidate_path=None,
+                    output_root=root / "packages",
                 )
 
     def test_merge_rejects_a_changed_package_identity(self) -> None:
@@ -387,7 +504,10 @@ class ManageCohortReviewsTests(unittest.TestCase):
 
     def test_merge_requires_complete_distinct_reviewer_identities(self) -> None:
         for scenario in ("incomplete", "same-reviewer"):
-            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                self.subTest(scenario=scenario),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
                 root = Path(tmpdir)
                 manifest_path, _, _ = make_candidate_source(root)
                 packages = root / "packages"
@@ -453,12 +573,8 @@ class ManageCohortReviewsTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(prepare.returncode, 0, prepare.stderr)
-            complete_sheet(
-                packages / "reviewer_1" / "cohort_review.csv", "Reviewer A"
-            )
-            complete_sheet(
-                packages / "reviewer_2" / "cohort_review.csv", "Reviewer B"
-            )
+            complete_sheet(packages / "reviewer_1" / "cohort_review.csv", "Reviewer A")
+            complete_sheet(packages / "reviewer_2" / "cohort_review.csv", "Reviewer B")
             merge = subprocess.run(
                 [
                     sys.executable,

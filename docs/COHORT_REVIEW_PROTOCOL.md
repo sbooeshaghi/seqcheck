@@ -12,15 +12,20 @@ ambiguous. At most one row for a configuration can enter the final cohort.
 
 Reviewers compare four records:
 
-1. The normalized seqspec linked in `normalized_spec_path`
+1. The packaged normalized seqspec at
+   `evidence/specs/<configuration_accession>.yaml`
 2. The assay protocol linked in the reviewer protocol field
 3. The portal-linked FASTQ accessions in `fastq_accessions`
 4. The seqspec-declared FASTQ accessions in `expected_fastq_accessions`
 
-When `proposed_correction_manifest` is populated, reviewers also compare the
-immutable original spec, corrected spec, and unified diff recorded in that
-manifest. The manifest must remain `proposed_unapproved`; the independent
-cohort decisions approve or reject its use.
+The `normalized_spec_path` and `proposed_correction_manifest` columns preserve
+the source paths used to build the package. They are provenance fields and may
+not resolve on the reviewer's machine. When `proposed_correction_manifest` is
+populated, reviewers use
+`evidence/corrections/<family_id>/<configuration_accession>/` to compare the
+immutable original spec, corrected spec, and unified diff. The manifest must
+remain `proposed_unapproved`; the independent cohort decisions approve or
+reject its use.
 
 ## Independent Decisions
 
@@ -40,8 +45,10 @@ uv run python scripts/manage_cohort_reviews.py prepare \
 
 Give `review/packages/reviewer_1/` to reviewer 1 and
 `review/packages/reviewer_2/` to reviewer 2. Each directory contains a review
-sheet and a package manifest. The two packages have different content-addressed
-package identifiers but the same candidate evidence.
+sheet, instructions, this protocol, normalized specs, any correction evidence,
+and a package manifest. Every packaged evidence file has a relative path and
+SHA-256 identity in the manifest. The two packages have different
+content-addressed package identifiers but the same candidate evidence.
 
 Each reviewer records their name, decision, rationale, protocol URL, and date.
 These five generic columns are the only editable fields in a reviewer sheet.

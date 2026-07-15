@@ -10,7 +10,10 @@ directory because that can retain stale specs. Raw FASTQ samples belong in a
 separately versioned artifact bundle with checksums.
 
 The cohort review and freeze procedure is defined in
-`docs/COHORT_REVIEW_PROTOCOL.md`.
+`docs/COHORT_REVIEW_PROTOCOL.md`. A prepared reviewer directory is
+self-contained: it includes the editable sheet, instructions, protocol,
+normalized specs, any proposed correction bundle, and a manifest of portable
+relative paths and hashes. Give each reviewer only their assigned directory.
 
 Run the Phase 0 acceptance gate before generating study results:
 
