@@ -23,6 +23,16 @@ SCHEMA_VERSION = "0.1.0"
 TOOL_VERSION = "0.1.0"
 SURVEY_SCHEMA_VERSION = "0.1.0"
 UNKNOWN_TERM = "RGN:unknown:unclassified"
+ADJUDICATION_CATEGORIES = (
+    "registry_too_specific",
+    "registry_too_broad",
+    "wrong_role",
+    "wrong_target",
+    "missing_role",
+    "ambiguous_context",
+    "reviewer_error",
+    "other",
+)
 PACKAGE_FIELDS = ("review_package_id", "review_slot", "review_item_id")
 CONTEXT_FIELDS = (
     "configuration_accession",
@@ -106,6 +116,7 @@ REVIEW_RESULT_FIELDS = (
     "adjudicator",
     "adjudication_date",
     "adjudicated_ontology_terms",
+    "adjudication_category",
     "adjudication_rationale",
 )
 TERM_REFERENCE_FIELDS = (
@@ -366,6 +377,7 @@ def merge_review_packages(
                 "adjudicator": "",
                 "adjudication_date": "",
                 "adjudicated_ontology_terms": "",
+                "adjudication_category": "",
                 "adjudication_rationale": "",
             }
         )
@@ -526,6 +538,8 @@ def validate_review_protocol(
         raise ValueError("ontology review agreement endpoint is invalid")
     if review.get("adjudication_required_for") != "term_set_disagreement":
         raise ValueError("ontology review adjudication policy is invalid")
+    if review.get("adjudication_categories") != list(ADJUDICATION_CATEGORIES):
+        raise ValueError("ontology review adjudication categories are invalid")
     seeds = review.get("review_package_seeds", {})
     if set(seeds) != {"reviewer_1", "reviewer_2"}:
         raise ValueError("ontology review package seeds are invalid")
@@ -552,11 +566,38 @@ def validate_review_protocol(
         raise ValueError("ontology confidence response values are invalid")
     if term_statuses != ["active", "experimental"]:
         raise ValueError("ontology reviewable term statuses are invalid")
+    analysis = review.get("analysis", {})
+    expected_analysis = {
+        "mapping_endpoint": "inverse_inclusion_weighted_exact_term_set_precision",
+        "agreement_endpoint": "population_weighted_exact_term_set_cohen_kappa",
+        "secondary_term_endpoint": "population_weighted_binary_term_metrics",
+        "bootstrap_unit": "configuration_accession",
+        "bootstrap_method": "percentile_cluster_bootstrap",
+    }
+    if any(analysis.get(key) != value for key, value in expected_analysis.items()):
+        raise ValueError("ontology review analysis endpoint is invalid")
+    replicates = analysis.get("bootstrap_replicates")
+    seed = analysis.get("bootstrap_seed")
+    confidence = analysis.get("confidence_level")
+    if (
+        isinstance(replicates, bool)
+        or not isinstance(replicates, int)
+        or replicates <= 0
+    ):
+        raise ValueError("ontology review bootstrap replicates are invalid")
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("ontology review bootstrap seed is invalid")
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise ValueError("ontology review confidence level is invalid")
+    if not 0 < confidence < 1:
+        raise ValueError("ontology review confidence level is outside (0, 1)")
     return {
         "package_seeds": {1: seeds["reviewer_1"], 2: seeds["reviewer_2"]},
         "context_values": set(context_values),
         "confidence_values": set(confidence_values),
         "reviewable_term_statuses": set(term_statuses),
+        "adjudication_categories": set(ADJUDICATION_CATEGORIES),
+        "analysis": analysis,
     }
 
 

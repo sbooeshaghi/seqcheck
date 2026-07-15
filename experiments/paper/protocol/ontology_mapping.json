@@ -45,6 +45,26 @@
     },
     "agreement_endpoint": "order_insensitive_exact_term_set",
     "adjudication_required_for": "term_set_disagreement",
+    "adjudication_categories": [
+      "registry_too_specific",
+      "registry_too_broad",
+      "wrong_role",
+      "wrong_target",
+      "missing_role",
+      "ambiguous_context",
+      "reviewer_error",
+      "other"
+    ],
+    "analysis": {
+      "mapping_endpoint": "inverse_inclusion_weighted_exact_term_set_precision",
+      "agreement_endpoint": "population_weighted_exact_term_set_cohen_kappa",
+      "secondary_term_endpoint": "population_weighted_binary_term_metrics",
+      "bootstrap_unit": "configuration_accession",
+      "bootstrap_method": "percentile_cluster_bootstrap",
+      "bootstrap_replicates": 2000,
+      "bootstrap_seed": 202607143,
+      "confidence_level": 0.95
+    },
     "reviewers": 2,
     "blind_registry_mapping": true
   },
