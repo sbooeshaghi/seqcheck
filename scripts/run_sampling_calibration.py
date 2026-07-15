@@ -191,22 +191,26 @@ def run_sampling_calibration(
     sampler_core = sampler_script.with_name("sample_fastq.py")
     tools = {
         "seqcheck": executable_identity(seqcheck_bin),
-        "sampler": script_identity(sampler_script, version=SAMPLER_VERSION),
-        "sampler_core": script_identity(sampler_core, version=SAMPLER_CORE_VERSION),
-        "runtime": script_identity(
+        "sampler": runtime.script_identity(sampler_script, version=SAMPLER_VERSION),
+        "sampler_core": runtime.script_identity(
+            sampler_core, version=SAMPLER_CORE_VERSION
+        ),
+        "runtime": runtime.script_identity(
             Path(runtime.__file__).resolve(), version=runtime.RUNTIME_SCHEMA_VERSION
         ),
-        "runner": script_identity(Path(__file__).resolve(), version=RUNNER_VERSION),
+        "runner": runtime.script_identity(
+            Path(__file__).resolve(), version=RUNNER_VERSION
+        ),
     }
     study_identity = {
         "schema_version": SCHEMA_VERSION,
         "selection_id": selection_manifest["selection_id"],
         "sampling_protocol_sha256": runtime.file_sha256(protocol_path),
         "seqcheck": functional_executable_identity(tools["seqcheck"]),
-        "sampler": functional_script_identity(tools["sampler"]),
-        "sampler_core": functional_script_identity(tools["sampler_core"]),
-        "runtime": functional_script_identity(tools["runtime"]),
-        "runner": functional_script_identity(tools["runner"]),
+        "sampler": runtime.functional_script_identity(tools["sampler"]),
+        "sampler_core": runtime.functional_script_identity(tools["sampler_core"]),
+        "runtime": runtime.functional_script_identity(tools["runtime"]),
+        "runner": runtime.functional_script_identity(tools["runner"]),
     }
     study_run_id = runtime.sha256_json(study_identity)[:16]
     report_rows = []
@@ -1115,49 +1119,8 @@ def executable_identity(path: Path) -> dict[str, Any]:
     }
 
 
-def script_identity(path: Path, *, version: str) -> dict[str, Any]:
-    root = path.parents[1]
-    status = git_output(
-        root,
-        "status",
-        "--porcelain",
-        "--untracked-files=normal",
-        "--",
-        str(path.relative_to(root)),
-    )
-    return {
-        "version": version,
-        "path": str(path),
-        "sha256": runtime.file_sha256(path),
-        "size_bytes": path.stat().st_size,
-        "git_commit": git_output(root, "rev-parse", "HEAD"),
-        "git_dirty": bool(status),
-        "python": sys.version.split()[0],
-    }
-
-
 def functional_executable_identity(value: dict[str, Any]) -> dict[str, Any]:
     return {"sha256": value["sha256"], "version": value["version"]}
-
-
-def functional_script_identity(value: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "version": value["version"],
-        "sha256": value["sha256"],
-        "python": value["python"],
-    }
-
-
-def git_output(root: Path, *args: str) -> str:
-    if not (root / ".git").exists():
-        return ""
-    completed = subprocess.run(
-        ["git", "-C", str(root), *args],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return completed.stdout.strip()
 
 
 def required_string(value: dict[str, Any], field: str) -> str:

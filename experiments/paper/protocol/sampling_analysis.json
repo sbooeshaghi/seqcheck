@@ -1,0 +1,124 @@
+{
+  "schema_version": "0.1.0",
+  "analysis_id": "sampling-policy-analysis",
+  "accuracy_aggregation": "configuration_max_of_fastq_case_max_absolute_error",
+  "prefix_bias_aggregation": "configuration_mean_of_fastq_case_means",
+  "policy": {
+    "preferred_records_per_fastq": 10000,
+    "escalation_records_per_fastq": 100000,
+    "median_absolute_error_max": 0.01,
+    "p95_absolute_error_max": 0.05,
+    "prefix_bias_ci_lower_min": -0.01,
+    "prefix_bias_ci_upper_max": 0.01,
+    "peak_resident_memory_bytes_max": 1073741824
+  },
+  "statistics": {
+    "minimum_independent_configurations_per_endpoint": 3,
+    "confidence_level": 0.95,
+    "bootstrap_resamples": 10000,
+    "bootstrap_seed": 20260714
+  },
+  "endpoint_metrics": [
+    {
+      "endpoint_id": "length_out_of_range_fraction",
+      "check": "length",
+      "metric_name": "out_of_range_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "full_read_coverage_fraction",
+      "check": "coverage",
+      "metric_name": "full_read_coverage_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "region_coverage_fraction",
+      "check": "coverage",
+      "metric_name": "covered_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "fixed_coverage_fraction",
+      "check": "fixed",
+      "metric_name": "covered_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "fixed_exact_match_fraction",
+      "check": "fixed",
+      "metric_name": "exact_match_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "onlist_coverage_fraction",
+      "check": "onlist",
+      "metric_name": "covered_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "exact_onlist_fraction",
+      "check": "onlist",
+      "metric_name": "exact_onlist_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "primer_forward_start_hit_fraction",
+      "check": "primer",
+      "metric_name": "forward_start_hit_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "primer_forward_internal_hit_fraction",
+      "check": "primer",
+      "metric_name": "forward_internal_hit_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "primer_reverse_complement_start_hit_fraction",
+      "check": "primer",
+      "metric_name": "reverse_complement_start_hit_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "primer_reverse_complement_internal_hit_fraction",
+      "check": "primer",
+      "metric_name": "reverse_complement_internal_hit_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "primer_absent_fraction",
+      "check": "primer",
+      "metric_name": "absent_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "random_coverage_fraction",
+      "check": "random",
+      "metric_name": "covered_fraction",
+      "unit": "fraction"
+    },
+    {
+      "endpoint_id": "random_sequence_entropy_fraction",
+      "check": "random",
+      "metric_name": "sequence_entropy_fraction",
+      "unit": "fraction"
+    }
+  ],
+  "descriptive_metrics": [
+    {
+      "metric_id": "random_unique_sequence_count",
+      "check": "random",
+      "metric_name": "unique_sequence_count",
+      "unit": "count",
+      "comparison": "prefix_vs_reservoir_at_equal_sample_size"
+    }
+  ],
+  "event_prevalences": [
+    0.000001,
+    0.00001,
+    0.0001,
+    0.001,
+    0.01,
+    0.05
+  ]
+}

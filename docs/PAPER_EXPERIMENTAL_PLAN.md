@@ -313,6 +313,11 @@ Compare these observed metrics with the complete-stream result:
 - Primer hit and absence fractions
 - Unique-sequence count and normalized entropy
 
+Raw unique-sequence count is not an absolute-error endpoint because it scales
+with the number of sampled reads. Compare it between prefix and reservoir
+samples at the same sample size and show it as a richness curve. Compare
+normalized sequence entropy directly with the complete-stream value.
+
 ### Analysis
 
 For fraction metrics, report signed error, absolute error, and 95% limits across
@@ -321,11 +326,18 @@ reservoir samples at the same sample size with paired differences. Report the
 probability of observing at least one event as a function of event prevalence and
 sample size.
 
+Aggregate region instances within each FASTQ, then cluster FASTQs from the same
+seqspec configuration before computing percentiles or bootstrap intervals. This
+keeps a configuration with two selected read files from counting as two
+independent experiments.
+
 The default sample size will be chosen before the evaluation benchmark. The
 provisional rule is to retain 10,000 reads when common fraction metrics have a
 median absolute error at most 0.01, the 95th percentile error is at most 0.05,
 and prefix sampling shows no material systematic shift. Metrics that fail these
 criteria will use 100,000 reads or remain quantitative interpretation outputs.
+The frozen endpoint list, aggregation rules, bootstrap settings, and thresholds
+are defined in `experiments/paper/protocol/sampling_analysis.json`.
 
 ### Outputs
 

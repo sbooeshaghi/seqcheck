@@ -167,6 +167,11 @@ def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None
         writer.writerows(rows)
 
 
+def read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open(newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
 def max_rss_bytes(value: int) -> int:
     return value if sys.platform == "darwin" else value * 1024
 
@@ -193,3 +198,45 @@ def canonical_json(value: Any) -> str:
 
 def sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def script_identity(path: Path, *, version: str) -> dict[str, Any]:
+    path = path.resolve()
+    root = path.parents[1]
+    status = git_output(
+        root,
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+        "--",
+        str(path.relative_to(root)),
+    )
+    return {
+        "version": version,
+        "path": str(path),
+        "sha256": file_sha256(path),
+        "size_bytes": path.stat().st_size,
+        "git_commit": git_output(root, "rev-parse", "HEAD"),
+        "git_dirty": bool(status),
+        "python": sys.version.split()[0],
+    }
+
+
+def functional_script_identity(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "version": value["version"],
+        "sha256": value["sha256"],
+        "python": value["python"],
+    }
+
+
+def git_output(root: Path, *args: str) -> str:
+    if not (root / ".git").exists():
+        return ""
+    completed = subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()

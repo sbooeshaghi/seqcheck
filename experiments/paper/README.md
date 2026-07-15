@@ -85,3 +85,19 @@ complete-stream reference, measures every planned seqcheck replicate, and
 exports canonical reports, raw metrics, scalar errors, and performance rows. It
 refuses to overwrite a run or accept changed input hashes. The run is usable
 only when `validation/sampling_calibration.json` reports `valid: true`.
+
+Analyze a valid calibration and freeze the sampling policy:
+
+```bash
+python3 scripts/analyze_sampling_calibration.py \
+  --study-manifest experiments/paper/runs/<run-id>/sampling-calibration/manifests/study.json \
+  --analysis-protocol experiments/paper/protocol/sampling_analysis.json \
+  --output-root experiments/paper/runs/<run-id>/sampling-analysis
+```
+
+The analyzer collapses region-level values within each FASTQ and clusters
+multiple FASTQs from the same configuration before computing accuracy limits or
+bootstrap intervals. `validation/sampling_analysis.json` must report
+`valid: true`. The generated policy is ready for later experiments only when
+`policy/sampling_policy.json` also reports `frozen: true`; insufficient endpoint
+coverage remains a valid analysis but does not pass the policy-freeze gate.

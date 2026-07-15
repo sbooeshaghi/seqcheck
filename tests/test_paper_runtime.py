@@ -110,6 +110,31 @@ class PaperRuntimeTests(unittest.TestCase):
         self.assertEqual(rows[1]["value_json"], "0.75")
         self.assertEqual(json.loads(rows[1]["value_json"]), 0.75)
 
+    def test_csv_and_script_identity_are_content_addressed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            table = root / "table.csv"
+            script = root / "tools" / "script.py"
+            script.parent.mkdir()
+            script.write_text("print('first')\n", encoding="utf-8")
+            MODULE.write_csv(table, [{"value": 1}], ["value"])
+
+            first = MODULE.script_identity(script, version="test")
+            rows = MODULE.read_csv(table)
+            script.write_text("print('second')\n", encoding="utf-8")
+            second = MODULE.script_identity(script, version="test")
+
+        self.assertEqual(rows, [{"value": "1"}])
+        self.assertNotEqual(first["sha256"], second["sha256"])
+        self.assertEqual(
+            MODULE.functional_script_identity(first),
+            {
+                "version": "test",
+                "sha256": first["sha256"],
+                "python": first["python"],
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
