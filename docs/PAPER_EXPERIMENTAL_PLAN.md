@@ -507,6 +507,16 @@ conditions must preserve read length and every declared fixed, onlist, and prime
 interval. Composition changes will be restricted to eligible measurement
 payloads.
 
+The control definitions and ordered severity candidates are frozen in
+`experiments/paper/protocol/complementarity.json`.
+`scripts/materialize_complementarity.py` generates every quality severity on the
+12 calibration configurations. For each quality operator, select the least
+severe candidate detected by FastQC in at least 90% of at least six independent
+configurations, then write that choice to a content-addressed policy before the
+evaluation split is materialized. A composition control without a long enough
+projected measurement payload is recorded as inapplicable rather than moved into
+a fixed, onlist, partition, primer, or linker interval.
+
 Add two schema-invalid seqspec controls, one missing a required field and one
 violating a region constraint. `seqspec check` should reject both. These controls
 are reported separately from the internally valid-but-wrong structural set.

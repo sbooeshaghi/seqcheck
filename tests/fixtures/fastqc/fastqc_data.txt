@@ -1,0 +1,18 @@
+##FastQC	0.12.1
+>>Basic Statistics	pass
+#Measure	Value
+Filename	reads.fastq
+File type	Conventional base calls
+Encoding	Sanger / Illumina 1.9
+Total Sequences	10000
+>>END_MODULE
+>>Per base sequence quality	warn
+#Base	Mean	Median
+1	20.0	20.0
+2	19.0	19.0
+>>END_MODULE
+>>Adapter Content	fail
+#Position	Illumina Universal Adapter
+1	0.0
+2	12.5
+>>END_MODULE

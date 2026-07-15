@@ -163,7 +163,13 @@ elif sys.argv[1] == "check":
         value = json.loads(spec_path.read_text())
     except json.JSONDecodeError:
         raise SystemExit(0)
+    if any(not region.get("region_id") for region in value.get("library_spec", [])):
+        print("missing required root region_id", file=sys.stderr)
+        raise SystemExit(1)
     for region in regions(value):
+        if region.get("min_len", 0) > region.get("max_len", 0):
+            print("region min_len exceeds max_len", file=sys.stderr)
+            raise SystemExit(1)
         onlist = region.get("onlist")
         if isinstance(onlist, dict) and onlist.get("urltype") == "local":
             resource = spec_path.parent / onlist.get("url", "")

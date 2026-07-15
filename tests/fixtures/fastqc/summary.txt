@@ -1,0 +1,3 @@
+PASS	Basic Statistics	reads.fastq
+WARN	Per base sequence quality	reads.fastq
+FAIL	Adapter Content	reads.fastq
