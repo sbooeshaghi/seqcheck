@@ -73,7 +73,7 @@ are paired observations, not independent replicates.
 The controlled benchmark will contain 30 public configurations, with five from
 each of six assay families:
 
-1. Droplet single-cell or single-nucleus RNA sequencing
+1. Droplet-partitioned RNA measurement
 2. Combinatorial-indexing RNA sequencing
 3. Single-cell or single-nucleus ATAC sequencing
 4. Joint RNA and chromatin multiome sequencing
@@ -92,14 +92,43 @@ and evaluation split. Cohort selection will not use seqcheck warning counts or
 controlled perturbation performance.
 
 Build the review pool with `scripts/build_cohort_candidates.py` and the versioned
-rules in `docs/cohort_family_rules.json`. The rules use exact portal assay titles
-and, where available, exact assay terms to propose a family. The hydrated
-seqspec supplies the actual modality. For example, a `Perturb-seq` title can
-describe either a guide read or its companion RNA read, so only a `crispr` or
-`guide` modality can qualify for the perturbation family. These automated fields
-screen candidates; they do not approve them.
+rules in `docs/cohort_family_rules.json`. Selection has two stages. First, exact
+portal assay titles and assay terms produce a lab-balanced metadata proposal
+pool. The builder then normalizes every proposal and uses the seqspec modality
+to produce a second lab-balanced review pool. For example, a `Perturb-seq` title
+can describe either a guide read or its companion RNA read, so only a `crispr`
+or `guide` modality can enter the perturbation review pool. A normalization
+failure cannot enter the review pool because its modality is unknown, but it
+remains in the proposal table with the failure reason.
 
-The builder normalizes candidates to seqspec 0.5.0, records schema/structural
+Both stages balance submitting laboratories first and portal-linked FASTQ counts
+within each laboratory second. FASTQ count is input metadata, not a validation
+result. This stratification keeps uncommon index-read layouts represented
+without favoring a specification because its declared FASTQs happen to match.
+
+Structural checks, resource checks, FASTQ reconciliation, and seqcheck results
+do not affect which modality-qualified proposals enter the review pool. They are
+diagnostic fields for review and later exclusion. This rule avoids selecting
+specifications because they happen to pass the tools being evaluated. The
+builder writes both `cohort_proposals.csv` and `cohort_candidates.csv` so every
+proposal, exclusion, and selected row can be reconciled.
+
+The frozen portal snapshot contains 18 released and validated configurations
+titled `scRNA-seq`, but all 18 point to controlled FASTQs. Public droplet RNA
+proposals therefore include RNA configurations from `10x multiome` and `10x
+multiome with MULTI-seq`. This family describes the RNA read measurement, not an
+RNA-only experiment. The actual `rna` modality and human protocol review still
+have to agree.
+
+The feature-tag source has a separate known issue. In the current snapshot, 105
+of 109 public configurations link an i2 FASTQ that the seqspec does not declare;
+only four reconcile exactly. Exact reconciliation must not be weakened to fill
+the family quota. Reviewers must either find another public source or preserve
+the original spec and approve an explicit, versioned correction before a fifth
+configuration can serve as a baseline. The uncorrected record remains an audit
+observation.
+
+The builder normalizes proposals to seqspec 0.5.0, records schema/structural
 validation separately from network-dependent resource validation, fingerprints
 the library/read structure without FASTQ bindings, and compares spec-declared
 FASTQs with portal-linked FASTQs. Resource validation runs only after a spec

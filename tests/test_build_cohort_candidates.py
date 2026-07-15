@@ -21,7 +21,8 @@ SPEC.loader.exec_module(MODULE)
 
 def rules_payload() -> dict:
     return {
-        "schema_version": "0.1.0",
+        "schema_version": "0.2.0",
+        "proposal_count_per_family": 4,
         "candidate_count_per_family": 2,
         "minimum_final_count_per_family": 1,
         "selection_seed": 7,
@@ -103,7 +104,9 @@ class CohortCandidateTests(unittest.TestCase):
             {row["candidate_families"] for row in inventory}, {"rna;multiome"}
         )
 
-    def test_metadata_eligibility_rejects_controlled_missing_and_unknown_access(self) -> None:
+    def test_metadata_eligibility_rejects_controlled_missing_and_unknown_access(
+        self,
+    ) -> None:
         configs = MODULE.parse_configurations(
             {
                 "@graph": [
@@ -132,7 +135,7 @@ class CohortCandidateTests(unittest.TestCase):
         self.assertTrue(observed["MISSING"][1][0].startswith("missing_fastq_metadata"))
         self.assertIn("unknown_fastq_access", observed["UNKNOWN"][1])
 
-    def test_selection_is_deterministic_and_round_robins_labs(self) -> None:
+    def test_proposals_are_deterministic_and_round_robin_labs(self) -> None:
         configs = MODULE.parse_configurations(
             {
                 "@graph": [
@@ -149,12 +152,180 @@ class CohortCandidateTests(unittest.TestCase):
         inventory = MODULE.build_inventory(
             configs, files, self.rules, "https://example.org/"
         )
-        forward = MODULE.select_candidates(inventory, self.rules, 2, 19)
-        reverse = MODULE.select_candidates(list(reversed(inventory)), self.rules, 2, 19)
+        forward = MODULE.select_proposals(inventory, self.rules, 2, 19)
+        reverse = MODULE.select_proposals(list(reversed(inventory)), self.rules, 2, 19)
         self.assertEqual(forward, reverse)
         rna = [row for row in forward if row["family_id"] == "rna"]
         self.assertEqual({row["lab"] for row in rna}, {"Lab A", "Lab B"})
-        self.assertEqual([row["family_rank"] for row in rna], [1, 2])
+        self.assertEqual([row["proposal_rank"] for row in rna], [1, 2])
+
+    def test_selection_represents_fastq_counts_within_a_lab(self) -> None:
+        rows = [
+            {
+                "family_id": "rna",
+                "configuration_accession": f"C{index}",
+                "lab": "Lab A",
+                "fastq_count": 4,
+            }
+            for index in range(5)
+        ]
+        rows.append(
+            {
+                "family_id": "rna",
+                "configuration_accession": "RARE",
+                "lab": "Lab A",
+                "fastq_count": 3,
+            }
+        )
+
+        selected = MODULE.select_lab_balanced(rows, "rna", 2, 19)
+
+        self.assertEqual({row["fastq_count"] for row in selected}, {3, 4})
+
+    def test_modality_screen_fills_review_pool_after_hydration(self) -> None:
+        configs = MODULE.parse_configurations(
+            {
+                "@graph": [
+                    configuration("A1", "RNA-seq", "Lab A", "F1"),
+                    configuration("A2", "RNA-seq", "Lab A", "F2"),
+                    configuration("A3", "RNA-seq", "Lab A", "F3"),
+                    configuration("B1", "RNA-seq", "Lab B", "F4"),
+                ]
+            }
+        )
+        files = MODULE.parse_sequence_files(
+            {"@graph": [sequence(f"F{index}") for index in range(1, 5)]}
+        )
+        inventory = MODULE.build_inventory(
+            configs, files, self.rules, "https://example.org/"
+        )
+        proposals = MODULE.select_proposals(inventory, self.rules, 4, 19)
+        modalities = {"A1": ("atac",), "A2": ("rna",), "A3": ("rna",), "B1": ("rna",)}
+        proposals = [
+            MODULE.enrich_candidate(
+                row,
+                MODULE.Hydration(
+                    status="normalized",
+                    modalities=modalities[row["configuration_accession"]],
+                ),
+            )
+            for row in proposals
+        ]
+
+        annotated, selected = MODULE.select_review_candidates(
+            proposals, self.rules, 2, 19
+        )
+        rna_selected = [row for row in selected if row["family_id"] == "rna"]
+        self.assertEqual(len(rna_selected), 2)
+        self.assertEqual({row["lab"] for row in rna_selected}, {"Lab A", "Lab B"})
+        self.assertTrue(all(row["modalities"] == "rna" for row in rna_selected))
+        mismatch = next(
+            row
+            for row in annotated
+            if row["family_id"] == "rna" and row["configuration_accession"] == "A1"
+        )
+        self.assertEqual(mismatch["review_selection_status"], "excluded")
+        self.assertIn("modality_mismatch", mismatch["review_exclusion_reason"])
+
+    def test_diagnostics_do_not_change_review_candidate_membership(self) -> None:
+        base = [
+            {
+                "family_id": "rna",
+                "configuration_accession": accession,
+                "lab": lab,
+                "hydration_status": "normalized",
+                "modality_match_status": "matched",
+                "modalities": "rna",
+                "family_expected_modalities": "rna",
+                "proposal_rank": rank,
+            }
+            for rank, (accession, lab) in enumerate(
+                [("A1", "Lab A"), ("A2", "Lab A"), ("B1", "Lab B")],
+                start=1,
+            )
+        ]
+        favorable = [
+            row
+            | {
+                "structural_check_status": "passed",
+                "resource_check_status": "passed",
+                "fastq_mapping_status": "matched",
+            }
+            for row in base
+        ]
+        unfavorable = [
+            row
+            | {
+                "structural_check_status": "failed",
+                "resource_check_status": "unavailable",
+                "fastq_mapping_status": "portal_extra",
+            }
+            for row in base
+        ]
+        _, first = MODULE.select_review_candidates(favorable, self.rules, 2, 19)
+        _, second = MODULE.select_review_candidates(unfavorable, self.rules, 2, 19)
+
+        def identity(rows: list[dict]) -> list[tuple[str, str]]:
+            return [(row["family_id"], row["configuration_accession"]) for row in rows]
+
+        self.assertEqual(identity(first), identity(second))
+
+    def test_validation_reports_an_underfilled_modality_pool(self) -> None:
+        payload = rules_payload()
+        rules = MODULE.parse_family_rules(
+            {**payload, "families": [payload["families"][0]]}
+        )
+        configs = MODULE.parse_configurations(
+            {
+                "@graph": [
+                    configuration("C1", "RNA-seq", "Lab A", "F1"),
+                    configuration("C2", "RNA-seq", "Lab B", "F2"),
+                ]
+            }
+        )
+        inventory = MODULE.build_inventory(
+            configs,
+            MODULE.parse_sequence_files({"@graph": [sequence("F1"), sequence("F2")]}),
+            rules,
+            "https://example.org/",
+        )
+        proposals = MODULE.select_proposals(inventory, rules, 2, 7)
+        proposals = [
+            MODULE.enrich_candidate(
+                row,
+                MODULE.Hydration(
+                    status="normalized",
+                    modalities=(
+                        "rna" if row["configuration_accession"] == "C1" else "atac",
+                    ),
+                ),
+            )
+            for row in proposals
+        ]
+        proposals, selected = MODULE.select_review_candidates(proposals, rules, 2, 7)
+
+        validation = MODULE.build_validation(
+            inventory,
+            proposals,
+            selected,
+            rules,
+            2,
+            2,
+            2,
+            "selection",
+            "created",
+        )
+        family = validation["families"][0]
+        self.assertEqual(family["modality_qualified_proposal_count"], 1)
+        self.assertEqual(family["selected_candidate_count"], 1)
+        self.assertFalse(family["minimum_final_pool_met"])
+        self.assertFalse(validation["all_candidate_minimums_met"])
+        self.assertTrue(
+            any(
+                "modality-qualified proposals" in blocker
+                for blocker in validation["freeze_blockers"]
+            )
+        )
 
     def test_normalized_structure_excludes_fastq_file_bindings(self) -> None:
         library = {"rna": [{"region_type": ["RGN:partition:cell"]}]}
@@ -207,9 +378,33 @@ class CohortCandidateTests(unittest.TestCase):
             self.rules,
             "https://example.org/",
         )
-        selected = [MODULE.enrich_candidate(inventory[0], None) | {"family_rank": 1}]
+        proposals = MODULE.select_proposals(inventory, self.rules, 1, 7)
+        proposals = [
+            MODULE.enrich_candidate(
+                row,
+                MODULE.Hydration(
+                    status="normalized",
+                    modalities=("rna",),
+                    structural_check_status="passed",
+                    resource_check_status="passed",
+                    fastq_mapping_status="matched",
+                ),
+            )
+            for row in proposals
+        ]
+        proposals, selected = MODULE.select_review_candidates(
+            proposals, self.rules, 1, 7
+        )
         validation = MODULE.build_validation(
-            inventory, selected, self.rules, 1, 1, "selection", "created"
+            inventory,
+            proposals,
+            selected,
+            self.rules,
+            1,
+            1,
+            1,
+            "selection",
+            "created",
         )
         self.assertFalse(validation["frozen"])
         self.assertFalse(validation["ready_to_freeze"])
@@ -226,16 +421,19 @@ class CohortCandidateTests(unittest.TestCase):
             MODULE.classify_check_status(1, "failed to send HTTP request"),
             "unavailable",
         )
-        with patch.object(
-            MODULE.subprocess,
-            "run",
-            side_effect=[
-                subprocess.TimeoutExpired(["seqspec", "check"], 5),
-                subprocess.CompletedProcess(
-                    ["seqspec", "check"], 0, stdout="valid", stderr=""
-                ),
-            ],
-        ), patch.object(MODULE.time, "sleep"):
+        with (
+            patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=[
+                    subprocess.TimeoutExpired(["seqspec", "check"], 5),
+                    subprocess.CompletedProcess(
+                        ["seqspec", "check"], 0, stdout="valid", stderr=""
+                    ),
+                ],
+            ),
+            patch.object(MODULE.time, "sleep"),
+        ):
             self.assertEqual(
                 MODULE.run_check_command(["seqspec", "check"], 5, 2, 0),
                 ("passed", "valid", 2),
@@ -248,7 +446,7 @@ class CohortCandidateTests(unittest.TestCase):
             return_value=("failed", "invalid structure", 1),
         ) as run_check:
             result = MODULE.run_seqspec_checks(
-                ["seqspec"], Path("spec.yaml"), 5, 3, 0
+                ["seqspec"], Path("spec.yaml"), 5, 120, 3, 0
             )
 
         self.assertEqual(
@@ -272,7 +470,7 @@ class CohortCandidateTests(unittest.TestCase):
             ],
         ) as run_check:
             result = MODULE.run_seqspec_checks(
-                ["seqspec"], Path("spec.yaml"), 120, 3, 2
+                ["seqspec"], Path("spec.yaml"), 5, 120, 3, 2
             )
 
         self.assertEqual(
@@ -284,7 +482,7 @@ class CohortCandidateTests(unittest.TestCase):
             [
                 call(
                     ["seqspec", "check", "--skip", "external", "spec.yaml"],
-                    120,
+                    5,
                     1,
                     0,
                 ),
@@ -298,24 +496,40 @@ class CohortCandidateTests(unittest.TestCase):
         )
 
     def test_attempt_counts_do_not_change_selection_identity(self) -> None:
-        common = ({}, 1, 7, "configuration", "sequence", {})
-        first = MODULE.selection_identity_payload(
-            [{"download_attempts": 1, "resource_check_attempts": 1}], *common
-        )
+        common = ({}, 1, 1, 7, "configuration", "sequence", {})
+        first_row = {"download_attempts": 1, "resource_check_attempts": 1}
+        retried_row = {"download_attempts": 3, "resource_check_attempts": 2}
+        first = MODULE.selection_identity_payload([first_row], [first_row], *common)
         retried = MODULE.selection_identity_payload(
-            [{"download_attempts": 3, "resource_check_attempts": 2}], *common
+            [retried_row], [retried_row], *common
         )
         self.assertEqual(first, retried)
 
     def test_resource_outcomes_do_not_change_selection_identity(self) -> None:
-        common = ({}, 1, 7, "configuration", "sequence", {})
-        passed = MODULE.selection_identity_payload(
-            [{"resource_check_status": "passed"}], *common
-        )
+        common = ({}, 1, 1, 7, "configuration", "sequence", {})
+        passed_row = {"resource_check_status": "passed"}
+        unavailable_row = {"resource_check_status": "unavailable"}
+        passed = MODULE.selection_identity_payload([passed_row], [passed_row], *common)
         unavailable = MODULE.selection_identity_payload(
-            [{"resource_check_status": "unavailable"}], *common
+            [unavailable_row], [unavailable_row], *common
         )
         self.assertEqual(passed, unavailable)
+
+    def test_structural_and_fastq_outcomes_do_not_change_selection_identity(
+        self,
+    ) -> None:
+        common = ({}, 1, 1, 7, "configuration", "sequence", {})
+        passed_row = {
+            "structural_check_status": "passed",
+            "fastq_mapping_status": "matched",
+        }
+        failed_row = {
+            "structural_check_status": "failed",
+            "fastq_mapping_status": "portal_extra",
+        }
+        passed = MODULE.selection_identity_payload([passed_row], [passed_row], *common)
+        failed = MODULE.selection_identity_payload([failed_row], [failed_row], *common)
+        self.assertEqual(passed, failed)
 
     def test_cli_writes_blank_review_sheet_and_preserves_it_on_rerun(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -339,7 +553,10 @@ class CohortCandidateTests(unittest.TestCase):
                 json.dumps({"@graph": [sequence("F1"), sequence("F2")]}),
                 encoding="utf-8",
             )
-            rules.write_text(json.dumps(rules_payload()), encoding="utf-8")
+            payload = rules_payload()
+            for family in payload["families"]:
+                family["expected_modalities"] = []
+            rules.write_text(json.dumps(payload), encoding="utf-8")
             argv = [
                 sys.executable,
                 str(SCRIPT_PATH),
@@ -360,6 +577,17 @@ class CohortCandidateTests(unittest.TestCase):
             self.assertTrue(review_rows)
             self.assertTrue(all(not row["reviewer_1_decision"] for row in review_rows))
             self.assertTrue(all(not row["split"] for row in review_rows))
+            with (output / "tables" / "cohort_proposals.csv").open(
+                newline="", encoding="utf-8"
+            ) as handle:
+                proposal_rows = list(csv.DictReader(handle))
+            self.assertEqual(
+                len(review_rows),
+                sum(
+                    row["review_selection_status"] == "selected"
+                    for row in proposal_rows
+                ),
+            )
 
             review_rows[0]["reviewer_1_decision"] = "include"
             MODULE.write_csv(review_path, review_rows, MODULE.REVIEW_FIELDS)

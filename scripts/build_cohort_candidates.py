@@ -24,10 +24,10 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = "0.1.0"
+SCHEMA_VERSION = "0.2.0"
 CURRENT_SEQSPEC_VERSION = "0.5.0"
 DEFAULT_PORTAL_ROOT = "https://api.data.igvf.org/"
-USER_AGENT = "seqcheck-cohort-builder/0.1"
+USER_AGENT = "seqcheck-cohort-builder/0.2"
 ONTOLOGY_TERM_PATTERN = re.compile(r"RGN:[A-Za-z0-9_]+:[A-Za-z0-9_]+")
 
 
@@ -88,7 +88,7 @@ class Hydration:
     normalized_spec_path: str = ""
 
 
-CANDIDATE_FIELDS = [
+PROPOSAL_FIELDS = [
     "selection_id",
     "family_id",
     "family_label",
@@ -96,7 +96,10 @@ CANDIDATE_FIELDS = [
     "family_rule_assay_terms",
     "family_expected_modalities",
     "family_rule_note",
+    "proposal_rank",
     "family_rank",
+    "review_selection_status",
+    "review_exclusion_reason",
     "configuration_accession",
     "configuration_url",
     "lab",
@@ -137,7 +140,9 @@ CANDIDATE_FIELDS = [
     "normalized_spec_path",
 ]
 
-REVIEW_FIELDS = CANDIDATE_FIELDS + [
+CANDIDATE_FIELDS = PROPOSAL_FIELDS
+
+REVIEW_FIELDS = PROPOSAL_FIELDS + [
     "reviewer_1",
     "reviewer_1_decision",
     "reviewer_1_rationale",
@@ -174,12 +179,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--portal-root", default=DEFAULT_PORTAL_ROOT)
     parser.add_argument("--candidate-count", type=int)
+    parser.add_argument(
+        "--proposal-count",
+        type=int,
+        help=(
+            "Metadata proposals to hydrate per family before modality screening "
+            "(default: rules registry)."
+        ),
+    )
     parser.add_argument("--seed", type=int)
     parser.add_argument(
         "--workers",
         type=int,
         default=2,
         help="Concurrent seqspec hydration workers (default: 2).",
+    )
+    parser.add_argument(
+        "--structural-check-timeout-seconds",
+        type=int,
+        default=120,
+        help="Maximum time for each local structural seqspec check (default: 120).",
     )
     parser.add_argument(
         "--check-timeout-seconds",
@@ -202,7 +221,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hydrate",
         action="store_true",
-        help="Download and normalize selected seqspec files.",
+        help="Download and normalize proposed seqspec files before modality screening.",
     )
     parser.add_argument(
         "--seqspec-bin",
@@ -223,25 +242,30 @@ def main() -> int:
 def run(args: argparse.Namespace) -> int:
     rules_payload = load_json(args.rules)
     rules = parse_family_rules(rules_payload)
+    proposal_count = (
+        args.proposal_count
+        if args.proposal_count is not None
+        else int(rules_payload["proposal_count_per_family"])
+    )
     candidate_count = (
         args.candidate_count
         if args.candidate_count is not None
         else int(rules_payload["candidate_count_per_family"])
     )
     seed = args.seed if args.seed is not None else int(rules_payload["selection_seed"])
-    minimum_final_count = int(
-        rules_payload.get("minimum_final_count_per_family", 5)
-    )
-    if candidate_count <= 0:
-        raise ValueError("candidate count must be positive")
+    minimum_final_count = int(rules_payload.get("minimum_final_count_per_family", 5))
+    if proposal_count <= 0 or candidate_count <= 0:
+        raise ValueError("proposal and candidate counts must be positive")
+    if proposal_count < candidate_count:
+        raise ValueError("proposal count must be no less than candidate count")
     if minimum_final_count <= 0 or minimum_final_count > candidate_count:
         raise ValueError(
             "minimum final count must be positive and no greater than candidate count"
         )
     if args.workers <= 0:
         raise ValueError("workers must be positive")
-    if args.check_timeout_seconds <= 0:
-        raise ValueError("check timeout must be positive")
+    if args.structural_check_timeout_seconds <= 0 or args.check_timeout_seconds <= 0:
+        raise ValueError("structural and resource check timeouts must be positive")
     if args.network_attempts <= 0:
         raise ValueError("network attempts must be positive")
     if args.retry_backoff_seconds < 0:
@@ -256,16 +280,20 @@ def run(args: argparse.Namespace) -> int:
     if not sequence_files:
         raise ValueError("sequence-file snapshot contains no records")
 
-    inventory = build_inventory(
-        configurations, sequence_files, rules, args.portal_root
-    )
-    selected = select_candidates(inventory, rules, candidate_count, seed)
-    if not selected:
-        raise ValueError("no eligible cohort candidates matched the family rules")
+    inventory = build_inventory(configurations, sequence_files, rules, args.portal_root)
+    proposals = select_proposals(inventory, rules, proposal_count, seed)
+    if not proposals:
+        raise ValueError("no eligible cohort proposals matched the family rules")
 
     output_root = args.output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
-    for directory in ("manifests", "tables", "validation", "specs/raw", "specs/normalized"):
+    for directory in (
+        "manifests",
+        "tables",
+        "validation",
+        "specs/raw",
+        "specs/normalized",
+    ):
         (output_root / directory).mkdir(parents=True, exist_ok=True)
 
     hydration_by_accession: dict[str, Hydration] = {}
@@ -273,9 +301,7 @@ def run(args: argparse.Namespace) -> int:
     if args.hydrate:
         seqspec_command = discover_seqspec_command(args.seqspec_bin)
         seqspec_identity = build_seqspec_identity(seqspec_command)
-        rows_by_accession = {
-            row["configuration_accession"]: row for row in selected
-        }
+        rows_by_accession = {row["configuration_accession"]: row for row in proposals}
         with ThreadPoolExecutor(max_workers=args.workers) as executor:
             futures = {
                 executor.submit(
@@ -283,6 +309,7 @@ def run(args: argparse.Namespace) -> int:
                     row,
                     output_root,
                     seqspec_command,
+                    args.structural_check_timeout_seconds,
                     args.check_timeout_seconds,
                     args.network_attempts,
                     args.retry_backoff_seconds,
@@ -302,13 +329,20 @@ def run(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
 
-    selected = [
-        enrich_candidate(row, hydration_by_accession.get(row["configuration_accession"]))
-        for row in selected
+    proposals = [
+        enrich_candidate(
+            row, hydration_by_accession.get(row["configuration_accession"])
+        )
+        for row in proposals
     ]
+    proposals, selected = select_review_candidates(
+        proposals, rules, candidate_count, seed
+    )
     stable_selection = selection_identity_payload(
+        proposals,
         selected,
         rules_payload,
+        proposal_count,
         candidate_count,
         seed,
         file_sha256(args.configurations),
@@ -316,32 +350,40 @@ def run(args: argparse.Namespace) -> int:
         functional_seqspec_identity(seqspec_identity),
     )
     selection_id = sha256_json(stable_selection)[:16]
-    for row in selected:
+    for row in proposals:
         row["selection_id"] = selection_id
 
     inventory_path = output_root / "tables" / "candidate_inventory.csv"
+    proposals_path = output_root / "tables" / "cohort_proposals.csv"
     candidates_path = output_root / "tables" / "cohort_candidates.csv"
     review_template_path = output_root / "tables" / "cohort_reviews.template.csv"
     review_path = output_root / "tables" / "cohort_reviews.csv"
     write_csv(inventory_path, inventory, inventory_fields(inventory))
+    write_csv(proposals_path, proposals, PROPOSAL_FIELDS)
     write_csv(candidates_path, selected, CANDIDATE_FIELDS)
-    review_rows = [{**row, **{field: "" for field in REVIEW_FIELDS if field not in row}} for row in selected]
+    review_rows = [
+        {**row, **{field: "" for field in REVIEW_FIELDS if field not in row}}
+        for row in selected
+    ]
     write_csv(review_template_path, review_rows, REVIEW_FIELDS)
     review_file_status = "preserved"
     review_selection_ids: list[str] = []
     if not review_path.exists():
         write_csv(review_path, review_rows, REVIEW_FIELDS)
         review_file_status = "created"
-        review_selection_ids = [selection_id]
+        review_selection_ids = [selection_id] if review_rows else []
     else:
         review_selection_ids = read_review_selection_ids(review_path)
-        if review_selection_ids != [selection_id]:
+        expected_review_ids = [selection_id] if review_rows else []
+        if review_selection_ids != expected_review_ids:
             review_file_status = "stale_preserved"
 
     validation = build_validation(
         inventory,
+        proposals,
         selected,
         rules,
+        proposal_count,
         candidate_count,
         minimum_final_count,
         selection_id,
@@ -354,10 +396,26 @@ def run(args: argparse.Namespace) -> int:
         "frozen": False,
         "split_assigned": False,
         "selection_uses_seqcheck_results": False,
+        "selection_gates": [
+            "public metadata eligibility",
+            "successful seqspec normalization",
+            "expected seqspec modality",
+        ],
+        "selection_stratification": [
+            "submitting laboratory",
+            "portal-linked FASTQ count within laboratory",
+        ],
+        "selection_excludes": [
+            "structural check outcome",
+            "resource check outcome",
+            "FASTQ reconciliation outcome",
+            "seqcheck result",
+        ],
         "rules": {
             "path": str(args.rules.resolve()),
             "sha256": file_sha256(args.rules),
             "schema_version": rules_payload.get("schema_version", ""),
+            "proposal_count_per_family": proposal_count,
             "candidate_count_per_family": candidate_count,
             "minimum_final_count_per_family": minimum_final_count,
             "selection_seed": seed,
@@ -375,15 +433,21 @@ def run(args: argparse.Namespace) -> int:
             "requested": bool(args.hydrate),
             "seqspec": seqspec_identity,
             "workers": args.workers,
-            "check_timeout_seconds": args.check_timeout_seconds,
+            "structural_check_timeout_seconds": args.structural_check_timeout_seconds,
+            "resource_check_timeout_seconds": args.check_timeout_seconds,
             "network_attempts": args.network_attempts,
             "retry_backoff_seconds": args.retry_backoff_seconds,
             "counts": dict(
-                sorted(Counter(value.status for value in hydration_by_accession.values()).items())
+                sorted(
+                    Counter(
+                        value.status for value in hydration_by_accession.values()
+                    ).items()
+                )
             ),
         },
         "outputs": {
             "candidate_inventory": str(inventory_path),
+            "cohort_proposals": str(proposals_path),
             "cohort_candidates": str(candidates_path),
             "cohort_review_template": str(review_template_path),
             "cohort_reviews": str(review_path),
@@ -394,8 +458,10 @@ def run(args: argparse.Namespace) -> int:
     write_json(output_root / "manifests" / "cohort_candidates.json", manifest)
     write_json(output_root / "validation" / "cohort_selection.json", validation)
 
+    action = "hydrated" if args.hydrate else "prepared"
     print(
-        f"selected {len(selected)} candidate rows across {len(rules)} families "
+        f"{action} {len(proposals)} proposals and selected {len(selected)} "
+        f"review candidates across {len(rules)} families "
         f"(selection_id={selection_id}, frozen=false)"
     )
     return 0
@@ -425,7 +491,15 @@ def parse_family_rules(payload: dict[str, Any]) -> list[FamilyRule]:
     seen: set[str] = set()
     for item in payload.get("families", []):
         family_id = str(item.get("id", "")).strip()
-        titles = tuple(sorted({str(value).strip() for value in item.get("preferred_assay_titles", []) if str(value).strip()}))
+        titles = tuple(
+            sorted(
+                {
+                    str(value).strip()
+                    for value in item.get("preferred_assay_titles", [])
+                    if str(value).strip()
+                }
+            )
+        )
         assay_terms = tuple(
             sorted({str(value).strip() for value in item.get("assay_terms", [])})
         )
@@ -439,7 +513,9 @@ def parse_family_rules(payload: dict[str, Any]) -> list[FamilyRule]:
             )
         )
         if not family_id or family_id in seen or not titles:
-            raise ValueError("each family needs a unique id and at least one exact title")
+            raise ValueError(
+                "each family needs a unique id and at least one exact title"
+            )
         seen.add(family_id)
         rules.append(
             FamilyRule(
@@ -470,7 +546,9 @@ def parse_configurations(payload: dict[str, Any]) -> list[Configuration]:
                 submitted_by=nested_string(item, "submitted_by", "title"),
                 file_set_accession=nested_string(item, "file_set", "accession"),
                 assay_term=nested_string(item, "file_set", "assay_term", "term_name"),
-                preferred_assay_titles=string_tuple(item.get("preferred_assay_titles", [])),
+                preferred_assay_titles=string_tuple(
+                    item.get("preferred_assay_titles", [])
+                ),
                 aliases=string_tuple(item.get("aliases", [])),
                 seqspec_of=string_tuple(item.get("seqspec_of", [])),
                 status=str(item.get("status", "")).strip(),
@@ -592,9 +670,7 @@ def build_inventory(
                     "family_rule_assay_terms": ";".join(
                         value or "<missing>" for value in rule.assay_terms
                     ),
-                    "family_expected_modalities": ";".join(
-                        rule.expected_modalities
-                    ),
+                    "family_expected_modalities": ";".join(rule.expected_modalities),
                     "family_rule_note": rule.note,
                     "configuration_accession": configuration.accession,
                     "configuration_url": absolute_url(portal_root, configuration.href),
@@ -602,7 +678,9 @@ def build_inventory(
                     "submitted_by": configuration.submitted_by,
                     "file_set_accession": configuration.file_set_accession,
                     "assay_term": configuration.assay_term,
-                    "preferred_assay_titles": ";".join(configuration.preferred_assay_titles),
+                    "preferred_assay_titles": ";".join(
+                        configuration.preferred_assay_titles
+                    ),
                     "aliases": ";".join(configuration.aliases),
                     "candidate_families": ";".join(candidate_families),
                     "ambiguous_family": len(candidate_families) > 1,
@@ -620,13 +698,13 @@ def build_inventory(
     )
 
 
-def select_candidates(
+def select_proposals(
     inventory: list[dict[str, Any]],
     rules: list[FamilyRule],
-    candidate_count: int,
+    proposal_count: int,
     seed: int,
 ) -> list[dict[str, Any]]:
-    selected = []
+    proposals = []
     for rule in rules:
         eligible = [
             row
@@ -634,23 +712,124 @@ def select_candidates(
             if row["family_id"] == rule.family_id
             and row["metadata_eligibility"] == "eligible"
         ]
-        by_lab: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for row in eligible:
-            by_lab[row["lab"]].append(row)
-        for lab, rows in by_lab.items():
-            rows.sort(
+        family_rows = select_lab_balanced(
+            eligible, rule.family_id, proposal_count, seed
+        )
+        for rank, row in enumerate(family_rows, start=1):
+            proposals.append(
+                {
+                    **row,
+                    "proposal_rank": rank,
+                    "family_rank": "",
+                    "review_selection_status": "pending_hydration",
+                    "review_exclusion_reason": "",
+                }
+            )
+    return proposals
+
+
+def select_review_candidates(
+    proposals: list[dict[str, Any]],
+    rules: list[FamilyRule],
+    candidate_count: int,
+    seed: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected_ranks: dict[tuple[str, str], int] = {}
+    for rule in rules:
+        qualified = [
+            row
+            for row in proposals
+            if row["family_id"] == rule.family_id and not review_exclusion_reason(row)
+        ]
+        family_rows = select_lab_balanced(
+            qualified, rule.family_id, candidate_count, seed
+        )
+        for rank, row in enumerate(family_rows, start=1):
+            selected_ranks[(row["family_id"], row["configuration_accession"])] = rank
+
+    annotated = []
+    for row in proposals:
+        key = (row["family_id"], row["configuration_accession"])
+        exclusion_reason = review_exclusion_reason(row)
+        if key in selected_ranks:
+            status = "selected"
+            family_rank: int | str = selected_ranks[key]
+        elif exclusion_reason:
+            status = "excluded"
+            family_rank = ""
+        else:
+            status = "qualified_not_selected"
+            exclusion_reason = "candidate_target_reached"
+            family_rank = ""
+        annotated.append(
+            {
+                **row,
+                "family_rank": family_rank,
+                "review_selection_status": status,
+                "review_exclusion_reason": exclusion_reason,
+            }
+        )
+
+    family_order = {rule.family_id: index for index, rule in enumerate(rules)}
+    selected = sorted(
+        (row for row in annotated if row["review_selection_status"] == "selected"),
+        key=lambda row: (family_order[row["family_id"]], row["family_rank"]),
+    )
+    return annotated, selected
+
+
+def review_exclusion_reason(row: dict[str, Any]) -> str:
+    match_status = row.get("modality_match_status", "not_run")
+    if match_status in {"matched", "not_required"}:
+        return ""
+    if row.get("hydration_status") != "normalized":
+        return f"normalization_{row.get('hydration_status', 'not_run')}"
+    if match_status == "mismatch":
+        observed = row.get("modalities", "") or "<missing>"
+        expected = row.get("family_expected_modalities", "") or "<unspecified>"
+        return f"modality_mismatch:observed={observed};expected={expected}"
+    return "modality_not_evaluated"
+
+
+def select_lab_balanced(
+    rows: list[dict[str, Any]],
+    family_id: str,
+    limit: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    rows_by_lab_and_layout: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for row in rows:
+        layout = str(row.get("fastq_count", ""))
+        rows_by_lab_and_layout[row["lab"]][layout].append(row)
+
+    by_lab: dict[str, list[dict[str, Any]]] = {}
+    for lab, rows_by_layout in rows_by_lab_and_layout.items():
+        for layout, layout_rows in rows_by_layout.items():
+            layout_rows.sort(
                 key=lambda row: stable_order_key(
-                    seed, rule.family_id, lab, row["configuration_accession"]
+                    seed,
+                    family_id,
+                    lab,
+                    layout,
+                    row["configuration_accession"],
                 )
             )
-        labs = sorted(
-            by_lab,
-            key=lambda lab: stable_order_key(seed, rule.family_id, lab),
+        layouts = sorted(
+            rows_by_layout,
+            key=lambda layout: stable_order_key(seed, family_id, lab, layout),
         )
-        family_rows = round_robin(by_lab, labs, candidate_count)
-        for rank, row in enumerate(family_rows, start=1):
-            selected.append({**row, "family_rank": rank})
-    return selected
+        by_lab[lab] = round_robin(
+            rows_by_layout,
+            layouts,
+            sum(len(layout_rows) for layout_rows in rows_by_layout.values()),
+        )
+    labs = sorted(
+        by_lab,
+        key=lambda lab: stable_order_key(seed, family_id, lab),
+    )
+    return round_robin(by_lab, labs, limit)
 
 
 def round_robin(
@@ -688,7 +867,9 @@ def discover_seqspec_command(requested: str | None) -> list[str]:
     env_bin = os.environ.get("SEQSPEC_BIN")
     if env_bin:
         return discover_seqspec_command(env_bin)
-    sibling = Path(__file__).resolve().parents[2] / "seqspec" / "target" / "debug" / "seqspec"
+    sibling = (
+        Path(__file__).resolve().parents[2] / "seqspec" / "target" / "debug" / "seqspec"
+    )
     if sibling.is_file():
         return [str(sibling)]
     path_bin = shutil.which("seqspec")
@@ -717,7 +898,8 @@ def hydrate_configuration(
     row: dict[str, Any],
     output_root: Path,
     seqspec_command: list[str],
-    check_timeout_seconds: int,
+    structural_check_timeout_seconds: int,
+    resource_check_timeout_seconds: int,
     network_attempts: int,
     retry_backoff_seconds: float,
 ) -> Hydration:
@@ -750,8 +932,12 @@ def hydrate_configuration(
         raw_version = parse_seqspec_version(
             run_command(seqspec_command + ["version", str(raw_path)])
         )
-        run_command(seqspec_command + ["upgrade", str(raw_path), "-o", str(normalized_path)])
-        version_output = run_command(seqspec_command + ["version", str(normalized_path)])
+        run_command(
+            seqspec_command + ["upgrade", str(raw_path), "-o", str(normalized_path)]
+        )
+        version_output = run_command(
+            seqspec_command + ["version", str(normalized_path)]
+        )
         version = parse_seqspec_version(version_output)
         if version != CURRENT_SEQSPEC_VERSION:
             raise RuntimeError(
@@ -787,13 +973,16 @@ def hydrate_configuration(
         ) = run_seqspec_checks(
             seqspec_command,
             normalized_path,
-            check_timeout_seconds,
+            structural_check_timeout_seconds,
+            resource_check_timeout_seconds,
             network_attempts,
             retry_backoff_seconds,
         )
         structure = normalized_structure(library_spec, sequence_spec)
         ontology_terms = tuple(sorted(extract_ontology_terms(library_spec)))
-        expected_fastqs = tuple(sorted(extract_expected_fastq_accessions(sequence_spec)))
+        expected_fastqs = tuple(
+            sorted(extract_expected_fastq_accessions(sequence_spec))
+        )
         linked_fastqs = tuple(
             sorted(value for value in row["fastq_accessions"].split(";") if value)
         )
@@ -909,14 +1098,14 @@ def classify_check_status(returncode: int, message: str) -> str:
 def run_seqspec_checks(
     seqspec_command: list[str],
     normalized_path: Path,
-    timeout_seconds: int,
+    structural_timeout_seconds: int,
+    resource_timeout_seconds: int,
     network_attempts: int,
     retry_backoff_seconds: float,
 ) -> tuple[str, str, str, str, int]:
     structural_status, structural_message, _ = run_check_command(
-        seqspec_command
-        + ["check", "--skip", "external", str(normalized_path)],
-        timeout_seconds,
+        seqspec_command + ["check", "--skip", "external", str(normalized_path)],
+        structural_timeout_seconds,
         1,
         0,
     )
@@ -925,7 +1114,7 @@ def run_seqspec_checks(
 
     resource_status, resource_message, resource_attempts = run_check_command(
         seqspec_command + ["check", str(normalized_path)],
-        timeout_seconds,
+        resource_timeout_seconds,
         network_attempts,
         retry_backoff_seconds,
     )
@@ -950,7 +1139,9 @@ def normalized_structure(library_spec: Any, sequence_spec: Any) -> dict[str, Any
     if isinstance(sequence_spec, list):
         for value in sequence_spec:
             if isinstance(value, dict):
-                reads.append({key: item for key, item in value.items() if key != "files"})
+                reads.append(
+                    {key: item for key, item in value.items() if key != "files"}
+                )
             else:
                 reads.append(value)
     return {"library_spec": library_spec, "sequence_spec": reads}
@@ -1032,10 +1223,10 @@ def enrich_candidate(
         value for value in row["family_expected_modalities"].split(";") if value
     }
     observed_modalities = set(hydration.modalities)
-    if hydration.status != "normalized":
-        modality_match_status = "not_run"
-    elif not expected_modalities:
+    if not expected_modalities:
         modality_match_status = "not_required"
+    elif hydration.status != "normalized":
+        modality_match_status = "not_run"
     elif expected_modalities.intersection(observed_modalities):
         modality_match_status = "matched"
     else:
@@ -1056,9 +1247,7 @@ def enrich_candidate(
         "structure_sha256": hydration.structure_sha256,
         "expected_fastq_accessions": ";".join(hydration.expected_fastq_accessions),
         "fastq_mapping_status": hydration.fastq_mapping_status,
-        "spec_only_fastq_accessions": ";".join(
-            hydration.spec_only_fastq_accessions
-        ),
+        "spec_only_fastq_accessions": ";".join(hydration.spec_only_fastq_accessions),
         "portal_only_fastq_accessions": ";".join(
             hydration.portal_only_fastq_accessions
         ),
@@ -1073,50 +1262,60 @@ def enrich_candidate(
 
 
 def selection_identity_payload(
+    proposals: list[dict[str, Any]],
     selected: list[dict[str, Any]],
     rules_payload: dict[str, Any],
+    proposal_count: int,
     candidate_count: int,
     seed: int,
     configuration_sha256: str,
     sequence_sha256: str,
     seqspec_identity: dict[str, Any],
 ) -> dict[str, Any]:
-    stable_rows = []
-    for row in selected:
-        stable_rows.append(
-            {
-                key: row.get(key, "")
-                for key in CANDIDATE_FIELDS
-                if key
-                not in {
-                    "selection_id",
-                    "normalized_spec_path",
-                    "hydration_message",
-                    "structural_check_message",
-                    "resource_check_status",
-                    "resource_check_message",
-                    "download_attempts",
-                    "resource_check_attempts",
-                }
-            }
-        )
+    proposal_identity_fields = (
+        "family_id",
+        "proposal_rank",
+        "configuration_accession",
+        "raw_spec_sha256",
+        "normalized_spec_sha256",
+        "normalized_seqspec_version",
+        "modalities",
+        "modality_match_status",
+        "review_selection_status",
+        "review_exclusion_reason",
+    )
+    candidate_identity_fields = (
+        "family_id",
+        "family_rank",
+        "configuration_accession",
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "rules": rules_payload,
+        "proposal_count_per_family": proposal_count,
         "candidate_count_per_family": candidate_count,
         "selection_seed": seed,
         "configuration_snapshot_sha256": configuration_sha256,
         "sequence_snapshot_sha256": sequence_sha256,
         "seqspec": seqspec_identity,
-        "candidates": stable_rows,
+        "proposals": [
+            {key: row.get(key, "") for key in proposal_identity_fields}
+            for row in proposals
+        ],
+        "candidates": [
+            {key: row.get(key, "") for key in candidate_identity_fields}
+            for row in selected
+        ],
     }
 
 
 def build_validation(
     inventory: list[dict[str, Any]],
+    proposals: list[dict[str, Any]],
     selected: list[dict[str, Any]],
     rules: list[FamilyRule],
-    target: int,
+    proposal_target: int,
+    candidate_target: int,
     minimum_final_count: int,
     selection_id: str,
     review_file_status: str,
@@ -1129,44 +1328,60 @@ def build_validation(
             if row["family_id"] == rule.family_id
             and row["metadata_eligibility"] == "eligible"
         ]
+        proposed = [row for row in proposals if row["family_id"] == rule.family_id]
+        modality_qualified = [
+            row for row in proposed if not review_exclusion_reason(row)
+        ]
         chosen = [row for row in selected if row["family_id"] == rule.family_id]
-        labs = sorted({row["lab"] for row in eligible})
+        eligible_labs = sorted({row["lab"] for row in eligible})
+        proposed_labs = sorted({row["lab"] for row in proposed})
+        qualified_labs = sorted({row["lab"] for row in modality_qualified})
         chosen_labs = sorted({row["lab"] for row in chosen})
         families.append(
             {
                 "family_id": rule.family_id,
                 "family_label": rule.label,
                 "eligible_configuration_count": len(eligible),
-                "eligible_lab_count": len(labs),
-                "eligible_labs": labs,
+                "eligible_lab_count": len(eligible_labs),
+                "eligible_labs": eligible_labs,
+                "selected_proposal_count": len(proposed),
+                "selected_proposal_lab_count": len(proposed_labs),
+                "selected_proposal_labs": proposed_labs,
+                "proposal_target": proposal_target,
+                "proposal_target_met": len(proposed) == proposal_target,
+                "modality_qualified_proposal_count": len(modality_qualified),
+                "modality_qualified_lab_count": len(qualified_labs),
+                "modality_qualified_labs": qualified_labs,
                 "selected_candidate_count": len(chosen),
                 "selected_lab_count": len(chosen_labs),
                 "selected_labs": chosen_labs,
-                "candidate_target": target,
-                "candidate_target_met": len(chosen) == target,
+                "candidate_target": candidate_target,
+                "candidate_target_met": len(chosen) == candidate_target,
                 "minimum_final_count": minimum_final_count,
-                "minimum_final_pool_met": len(eligible) >= minimum_final_count,
-                "two_lab_diversity_possible": len(labs) >= 2,
+                "metadata_minimum_pool_met": len(eligible) >= minimum_final_count,
+                "minimum_final_pool_met": len(modality_qualified)
+                >= minimum_final_count,
+                "two_lab_diversity_possible": len(qualified_labs) >= 2,
                 "two_lab_diversity_selected": len(chosen_labs) >= 2,
             }
         )
     dedup_counts = Counter(
-        row["deduplication_key"]
+        row["deduplication_key"] for row in selected if row.get("deduplication_key")
+    )
+    minimum_pool_met = all(family["minimum_final_pool_met"] for family in families)
+    candidate_minimum_met = all(
+        family["selected_candidate_count"] >= minimum_final_count for family in families
+    )
+    normalization_complete = bool(selected) and all(
+        row["hydration_status"] == "normalized"
+        or row["modality_match_status"] == "not_required"
         for row in selected
-        if row.get("deduplication_key")
-    )
-    minimum_pool_met = all(
-        family["minimum_final_pool_met"] for family in families
-    )
-    normalization_complete = all(
-        row["hydration_status"] == "normalized" for row in selected
     )
     fastq_mapping_complete = all(
         row["fastq_mapping_status"] == "matched" for row in selected
     )
     modality_match_complete = all(
-        row["modality_match_status"] in {"matched", "not_required"}
-        for row in selected
+        row["modality_match_status"] in {"matched", "not_required"} for row in selected
     )
     structural_checks_complete = all(
         row["structural_check_status"] == "passed" for row in selected
@@ -1177,7 +1392,11 @@ def build_validation(
     freeze_blockers = []
     if not minimum_pool_met:
         freeze_blockers.append(
-            "at least one family has fewer eligible public candidates than the final cohort minimum"
+            "at least one family has fewer modality-qualified proposals than the final cohort minimum"
+        )
+    if not candidate_minimum_met:
+        freeze_blockers.append(
+            "at least one family has fewer selected review candidates than the final cohort minimum"
         )
     if not normalization_complete:
         freeze_blockers.append(
@@ -1243,6 +1462,31 @@ def build_validation(
         "required_independent_reviewers": 2,
         "review_file_status": review_file_status,
         "inventory_row_count": len(inventory),
+        "proposal_row_count": len(proposals),
+        "proposal_unique_configuration_count": len(
+            {row["configuration_accession"] for row in proposals}
+        ),
+        "proposal_review_selection_status_counts": dict(
+            sorted(Counter(row["review_selection_status"] for row in proposals).items())
+        ),
+        "proposal_review_exclusion_reason_counts": dict(
+            sorted(
+                Counter(
+                    row["review_exclusion_reason"]
+                    for row in proposals
+                    if row["review_exclusion_reason"]
+                ).items()
+            )
+        ),
+        "proposal_normalization_failure_count": sum(
+            row["hydration_status"] == "failed" for row in proposals
+        ),
+        "proposal_normalization_complete_count": sum(
+            row["hydration_status"] == "normalized" for row in proposals
+        ),
+        "proposal_modality_match_status_counts": dict(
+            sorted(Counter(row["modality_match_status"] for row in proposals).items())
+        ),
         "selected_candidate_row_count": len(selected),
         "selected_unique_configuration_count": len(
             {row["configuration_accession"] for row in selected}
@@ -1287,7 +1531,11 @@ def build_validation(
             sorted(Counter(row["resource_check_status"] for row in selected).items())
         ),
         "all_minimum_final_pools_met": minimum_pool_met,
+        "all_candidate_minimums_met": candidate_minimum_met,
         "all_minimum_qualified_pools_met": qualified_pools_met,
+        "all_proposal_targets_met": all(
+            family["proposal_target_met"] for family in families
+        ),
         "all_candidate_targets_met": all(
             family["candidate_target_met"] for family in families
         ),
@@ -1321,10 +1569,14 @@ def read_review_selection_ids(path: Path) -> list[str]:
 
 
 def write_json(path: Path, value: Any) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
-def snapshot_identity(path: Path, payload: dict[str, Any], count: int) -> dict[str, Any]:
+def snapshot_identity(
+    path: Path, payload: dict[str, Any], count: int
+) -> dict[str, Any]:
     return {
         "path": str(path.resolve()),
         "sha256": file_sha256(path),

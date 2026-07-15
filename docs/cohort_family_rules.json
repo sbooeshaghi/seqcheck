@@ -1,13 +1,16 @@
 {
-  "schema_version": "0.1.0",
+  "schema_version": "0.2.0",
+  "proposal_count_per_family": 50,
   "candidate_count_per_family": 15,
   "minimum_final_count_per_family": 5,
   "selection_seed": 20260713,
   "families": [
     {
       "id": "droplet_rna",
-      "label": "Droplet single-cell or single-nucleus RNA sequencing",
+      "label": "Droplet-partitioned RNA measurement",
       "preferred_assay_titles": [
+        "10x multiome",
+        "10x multiome with MULTI-seq",
         "scRNA-seq"
       ],
       "assay_terms": [
@@ -17,7 +20,7 @@
       "expected_modalities": [
         "rna"
       ],
-      "note": "Portal titles propose the family. Reviewers must verify that the configuration represents the RNA modality of a droplet assay."
+      "note": "This family describes a public droplet-partitioned RNA read configuration, not an RNA-only experiment. The frozen portal snapshot has no public eligible configurations titled scRNA-seq, so RNA configurations from 10x joint assays supply the public proposals. Reviewers must verify the droplet context."
     },
     {
       "id": "combinatorial_rna",
