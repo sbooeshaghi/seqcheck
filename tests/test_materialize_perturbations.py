@@ -222,7 +222,12 @@ def fastq_records(count: int) -> list[MODULE.mutation.FastqRecord]:
     ]
 
 
-def create_inputs(root: Path, *, cohort_split: str = "calibration") -> dict[str, Path]:
+def create_inputs(
+    root: Path,
+    *,
+    cohort_split: str = "calibration",
+    configuration_accession: str = "CONFIG1",
+) -> dict[str, Path]:
     root.mkdir(parents=True)
     seqspec = root / "seqspec"
     yq = root / "yq"
@@ -250,7 +255,7 @@ def create_inputs(root: Path, *, cohort_split: str = "calibration") -> dict[str,
     write_json(protocol, value)
     selected_case = {
         "family_id": "rna_family",
-        "configuration_accession": "CONFIG1",
+        "configuration_accession": configuration_accession,
         "modality": "rna",
         "selection_role": "primary",
         "read_id": "synthetic_R1",
@@ -284,7 +289,7 @@ def create_inputs(root: Path, *, cohort_split: str = "calibration") -> dict[str,
     case = {
         **selected_case,
         "selection_id": selection_id,
-        "case_id": "config1--r1",
+        "case_id": f"{configuration_accession.lower()}--r1",
     }
     write_json(
         cases_path,

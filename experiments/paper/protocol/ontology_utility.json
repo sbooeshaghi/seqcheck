@@ -1,0 +1,126 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "region-ontology-analytical-utility",
+  "observations": {
+    "negative_condition_kind": "clean",
+    "positive_condition_kinds": [
+      "deterministic",
+      "stochastic"
+    ],
+    "stochastic_anchor_fraction": 0.01,
+    "positive_requires_target_region": true,
+    "positive_requires_expected_metric": true,
+    "positive_aggregation": "configuration_region_metric_operator_median",
+    "metrics": [
+      {
+        "check": "random",
+        "metric_name": "sequence_entropy_fraction",
+        "unit": "fraction",
+        "sequence_type": "random",
+        "ontology_terms": [
+          "RGN:partition:molecule",
+          "RGN:measure:transcript"
+        ],
+        "anomaly_direction": "decrease"
+      },
+      {
+        "check": "onlist",
+        "metric_name": "exact_onlist_fraction",
+        "unit": "fraction",
+        "sequence_type": "onlist",
+        "ontology_terms": [
+          "RGN:partition:cell",
+          "RGN:partition:nucleus",
+          "RGN:partition:sample",
+          "RGN:partition:feature",
+          "RGN:partition:perturbation",
+          "RGN:measure:guide",
+          "RGN:measure:protein_feature"
+        ],
+        "anomaly_direction": "decrease"
+      },
+      {
+        "check": "fixed",
+        "metric_name": "exact_match_fraction",
+        "unit": "fraction",
+        "sequence_type": "fixed",
+        "ontology_terms": [
+          "RGN:technical:linker",
+          "RGN:technical:primer",
+          "RGN:technical:adapter",
+          "RGN:technical:capture_sequence"
+        ],
+        "anomaly_direction": "decrease"
+      }
+    ]
+  },
+  "eligibility": {
+    "minimum_independent_configurations_per_term_per_split": 3,
+    "require_all_signature_terms_eligible": true
+  },
+  "models": [
+    {
+      "model_id": "M1",
+      "name": "no_region_semantics",
+      "group_fields": [
+        "metric_name"
+      ],
+      "minimum_reference_configurations": 3
+    },
+    {
+      "model_id": "M2",
+      "name": "sequence_type_only",
+      "group_fields": [
+        "metric_name",
+        "sequence_type"
+      ],
+      "minimum_reference_configurations": 3
+    },
+    {
+      "model_id": "M3",
+      "name": "sequence_type_plus_ontology",
+      "group_fields": [
+        "metric_name",
+        "sequence_type",
+        "ontology_signature"
+      ],
+      "minimum_reference_configurations": 3
+    },
+    {
+      "model_id": "M4",
+      "name": "assay_family_plus_ontology",
+      "group_fields": [
+        "metric_name",
+        "family_id",
+        "ontology_signature"
+      ],
+      "minimum_reference_configurations": 1
+    }
+  ],
+  "fit": {
+    "reference_statistic": "median_of_configuration_medians",
+    "anomaly_score": "reference_minus_observed",
+    "sensitivity_target": 0.9,
+    "threshold_selection": "largest_score_cutoff_reaching_target_with_ties_included",
+    "unseen_group_policy": "exclude_and_report_coverage"
+  },
+  "evaluation": {
+    "primary_model": "M3",
+    "baseline_model": "M2",
+    "operating_point": "calibration_threshold_fixed_at_target_sensitivity",
+    "calibration_metric": "absolute_held_out_sensitivity_minus_target",
+    "ranking_metric": "tie_aware_average_precision",
+    "require_disjoint_configurations": true
+  },
+  "statistics": {
+    "bootstrap_unit": "configuration_accession",
+    "bootstrap_method": "percentile_cluster_bootstrap",
+    "bootstrap_replicates": 2000,
+    "bootstrap_seed": 202607144,
+    "confidence_level": 0.95
+  },
+  "scientific_targets": {
+    "relative_false_positive_rate_reduction_min": 0.2,
+    "false_positive_rate_difference_upper_ci_max": 0.0
+  }
+}

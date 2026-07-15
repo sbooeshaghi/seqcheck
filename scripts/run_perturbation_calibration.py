@@ -89,6 +89,8 @@ METRIC_FIELDS = (
     "reads",
     "regions",
     "ontology_terms",
+    "sequence_types",
+    "region_annotations_json",
     "metric_side",
     "metric_id",
     "metric_name",
@@ -119,6 +121,8 @@ ASSESSMENT_FIELDS = (
     "reads",
     "regions",
     "ontology_terms",
+    "sequence_types",
+    "region_annotations_json",
     "assessment_type",
     "assessment_code",
     "assessment_description",
@@ -433,8 +437,16 @@ def run_condition(
         if not str(payload.get("report_schema_version", "")).strip():
             raise ValueError(f"{condition_id}: report schema version is missing")
         report_identity = runtime.file_identity(report_path)
-        metrics = runtime.flatten_report_metrics(payload, context)
-        assessments = runtime.flatten_report_assessments(payload, context)
+        spec = runtime.load_json(Path(condition["spec"]["path"]))
+        region_annotations = runtime.index_seqspec_regions(
+            spec, modality=condition["modality"]
+        )
+        metrics = runtime.flatten_report_metrics(
+            payload, context, region_annotations=region_annotations
+        )
+        assessments = runtime.flatten_report_assessments(
+            payload, context, region_annotations=region_annotations
+        )
     performance = performance_row(
         condition=condition,
         measurement=measurement,

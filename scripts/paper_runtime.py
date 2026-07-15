@@ -77,13 +77,17 @@ def require_success(measurement: dict[str, Any]) -> None:
 
 
 def flatten_report_metrics(
-    payload: dict[str, Any], context: dict[str, Any]
+    payload: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    region_annotations: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows = []
     for result_index, result in enumerate(payload.get("results", [])):
         if not isinstance(result, dict):
             continue
         ontology_terms = ";".join(sorted(extract_ontology_terms(result)))
+        annotations = resolve_result_region_annotations(result, region_annotations)
         for side in ("expected", "observed"):
             values = result.get(side, [])
             if not isinstance(values, list):
@@ -103,6 +107,10 @@ def flatten_report_metrics(
                         "reads": join_values(result.get("reads", [])),
                         "regions": join_values(result.get("regions", [])),
                         "ontology_terms": ontology_terms,
+                        "sequence_types": ";".join(
+                            sorted({value["sequence_type"] for value in annotations})
+                        ),
+                        "region_annotations_json": canonical_json(annotations),
                         "metric_side": side,
                         "metric_id": str(metric.get("id", "")),
                         "metric_name": str(metric.get("name", "")),
@@ -126,13 +134,17 @@ def count_report_metrics(payload: dict[str, Any]) -> int:
 
 
 def flatten_report_assessments(
-    payload: dict[str, Any], context: dict[str, Any]
+    payload: dict[str, Any],
+    context: dict[str, Any],
+    *,
+    region_annotations: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows = []
     for result_index, result in enumerate(payload.get("results", [])):
         if not isinstance(result, dict):
             continue
         ontology_terms = ";".join(sorted(extract_ontology_terms(result)))
+        annotations = resolve_result_region_annotations(result, region_annotations)
         assessments = result.get("assessment", [])
         if not isinstance(assessments, list):
             continue
@@ -149,6 +161,10 @@ def flatten_report_assessments(
                     "reads": join_values(result.get("reads", [])),
                     "regions": join_values(result.get("regions", [])),
                     "ontology_terms": ontology_terms,
+                    "sequence_types": ";".join(
+                        sorted({value["sequence_type"] for value in annotations})
+                    ),
+                    "region_annotations_json": canonical_json(annotations),
                     "assessment_type": str(assessment.get("type", "")),
                     "assessment_code": str(assessment.get("code", "")),
                     "assessment_description": str(assessment.get("description", "")),
@@ -174,6 +190,79 @@ def extract_ontology_terms(value: Any) -> set[str]:
     elif isinstance(value, str) and value.startswith("RGN:"):
         terms.add(value)
     return terms
+
+
+def index_seqspec_regions(
+    payload: dict[str, Any], *, modality: str | None = None
+) -> dict[str, dict[str, Any]]:
+    """Index nominal region annotations without depending on free-text labels."""
+    roots = payload.get("library_spec", [])
+    if not isinstance(roots, list):
+        raise ValueError("seqspec library_spec is not a list")
+    if modality is not None:
+        roots = [
+            value
+            for value in roots
+            if isinstance(value, dict) and value.get("region_id") == modality
+        ]
+        if len(roots) != 1:
+            raise ValueError(
+                f"seqspec has no unique library root for modality: {modality}"
+            )
+    indexed = {}
+    stack = list(reversed(roots))
+    while stack:
+        region = stack.pop()
+        if not isinstance(region, dict):
+            raise ValueError("seqspec library_spec contains a non-object region")
+        region_id = str(region.get("region_id", "")).strip()
+        sequence_type = str(region.get("sequence_type", "")).strip()
+        if not region_id or not sequence_type:
+            raise ValueError("seqspec region annotation is incomplete")
+        if region_id in indexed:
+            raise ValueError(f"seqspec region_id is not unique: {region_id}")
+        indexed[region_id] = {
+            "region_id": region_id,
+            "sequence_type": sequence_type,
+            "ontology_terms": region_ontology_terms(region.get("region_type")),
+        }
+        children = region.get("regions", [])
+        if not isinstance(children, list):
+            raise ValueError(f"seqspec region {region_id} has invalid children")
+        stack.extend(reversed(children))
+    return indexed
+
+
+def region_ontology_terms(value: Any) -> list[str]:
+    values = [value] if isinstance(value, str) else value
+    if not isinstance(values, list) or not values:
+        raise ValueError("seqspec region_type is not a string or nonempty list")
+    terms = []
+    for term in values:
+        if not isinstance(term, str) or not term.startswith("RGN:"):
+            raise ValueError(f"seqspec region_type is not an ontology term: {term}")
+        terms.append(term)
+    if len(terms) != len(set(terms)):
+        raise ValueError("seqspec region_type contains duplicate ontology terms")
+    return sorted(terms)
+
+
+def resolve_result_region_annotations(
+    result: dict[str, Any],
+    region_annotations: dict[str, dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if region_annotations is None:
+        return []
+    region_ids = result.get("regions", [])
+    if not isinstance(region_ids, list):
+        raise ValueError("seqcheck result regions is not a list")
+    resolved = []
+    for value in region_ids:
+        region_id = str(value).strip()
+        if not region_id or region_id not in region_annotations:
+            raise ValueError(f"seqcheck result references unknown region: {region_id}")
+        resolved.append(region_annotations[region_id])
+    return resolved
 
 
 def join_values(value: Any) -> str:

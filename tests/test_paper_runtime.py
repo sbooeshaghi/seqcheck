@@ -141,6 +141,111 @@ class PaperRuntimeTests(unittest.TestCase):
         self.assertEqual(rows[1]["value_json"], "0.75")
         self.assertEqual(json.loads(rows[1]["value_json"]), 0.75)
 
+    def test_report_flatten_preserves_nominal_region_annotations(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "check": "random",
+                    "files": ["R1"],
+                    "reads": ["read1"],
+                    "regions": ["umi"],
+                    "expected": [],
+                    "observed": [
+                        {
+                            "id": "o1",
+                            "name": "sequence_entropy_fraction",
+                            "description": "Entropy fraction.",
+                            "data": {"kind": "scalar", "value": 0.9},
+                        }
+                    ],
+                    "ontology": ["RGN:partition:molecule"],
+                }
+            ]
+        }
+        spec = {
+            "library_spec": [
+                {
+                    "region_id": "rna",
+                    "region_type": ["RGN:unknown:unclassified"],
+                    "sequence_type": "joined",
+                    "regions": [
+                        {
+                            "region_id": "umi",
+                            "region_type": ["RGN:partition:molecule"],
+                            "sequence_type": "random",
+                            "regions": [],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        rows = MODULE.flatten_report_metrics(
+            payload,
+            {"case_id": "case"},
+            region_annotations=MODULE.index_seqspec_regions(spec),
+        )
+
+        self.assertEqual(rows[0]["sequence_types"], "random")
+        self.assertEqual(
+            json.loads(rows[0]["region_annotations_json"]),
+            [
+                {
+                    "ontology_terms": ["RGN:partition:molecule"],
+                    "region_id": "umi",
+                    "sequence_type": "random",
+                }
+            ],
+        )
+
+    def test_report_flatten_rejects_unknown_region_annotation(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown region"):
+            MODULE.flatten_report_metrics(
+                {"results": [{"regions": ["missing"]}]},
+                {},
+                region_annotations={},
+            )
+
+    def test_seqspec_region_index_is_scoped_to_modality(self) -> None:
+        spec = {
+            "library_spec": [
+                {
+                    "region_id": "rna",
+                    "region_type": ["RGN:unknown:unclassified"],
+                    "sequence_type": "joined",
+                    "regions": [
+                        {
+                            "region_id": "barcode",
+                            "region_type": ["RGN:partition:cell"],
+                            "sequence_type": "onlist",
+                            "regions": [],
+                        }
+                    ],
+                },
+                {
+                    "region_id": "atac",
+                    "region_type": ["RGN:unknown:unclassified"],
+                    "sequence_type": "joined",
+                    "regions": [
+                        {
+                            "region_id": "barcode",
+                            "region_type": ["RGN:partition:nucleus"],
+                            "sequence_type": "onlist",
+                            "regions": [],
+                        }
+                    ],
+                },
+            ]
+        }
+
+        indexed = MODULE.index_seqspec_regions(spec, modality="atac")
+
+        self.assertEqual(
+            indexed["barcode"]["ontology_terms"], ["RGN:partition:nucleus"]
+        )
+        with self.assertRaisesRegex(ValueError, "not unique"):
+            MODULE.index_seqspec_regions(spec)
+
     def test_csv_and_script_identity_are_content_addressed(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

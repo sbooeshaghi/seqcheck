@@ -608,15 +608,47 @@ For the controlled benchmark, compare reference models that group a metric by:
 
 Use role-appropriate metrics:
 
-- Entropy for molecule partitions versus transcript measurements
+- Entropy fraction for molecule partitions versus transcript measurements
 - Onlist fraction for cell, sample, feature, and guide-related regions
 - Exact-match fraction for linker, primer, adapter, and capture regions
+
+The perturbation runner exports the nominal `sequence_type` and complete ontology
+term list for each result region from the exact content-addressed seqspec used for
+that condition. The analytical utility code accepts a role metric only when the
+result resolves to one region and the report ontology terms agree exactly with
+the seqspec annotation. This avoids assigning a scalar result to a region by its
+free-text name or by a result-level union of terms.
+
+Clean region-metric observations are negatives. A perturbed observation is a
+positive only when the condition names both that region and metric as targets.
+Stochastic conditions use the fixed 1% anchor from Experiment 2. Mutation seeds
+and variants are collapsed to one median per configuration, region, metric, and
+operator, so repeated conditions do not give one assay extra weight.
+
+Multi-term regions are represented by the sorted set of role-relevant ontology
+terms. They are not duplicated and no arbitrary primary term is selected. For
+example, an onlist guide can retain both direct guide-measurement and partition
+roles when both are declared. The term-specific eligibility rule still requires
+each member term to occur in at least three independent configurations in each
+split.
 
 Fit thresholds on the calibration configurations and evaluate on the locked
 configurations. Compare false-positive rate at fixed sensitivity, calibration,
 and area under the precision-recall curve. The primary ontology comparison is
 model 3 versus model 2 because it isolates the value added beyond
 `sequence_type`.
+
+Each model estimates a clean reference as the median of configuration-level
+medians within its grouping. Because all three endpoints are fractions, its
+anomaly score is the reference minus the observed value. The calibration
+threshold is the largest tied score cutoff that reaches 90% sensitivity. The
+locked evaluation reports the resulting sensitivity and false-positive rate,
+the absolute deviation from the 90% sensitivity target as operating-point
+calibration, and tie-aware average precision. Confidence intervals resample
+evaluation configurations while keeping the fitted references and thresholds
+fixed. These rules are frozen in
+`experiments/paper/protocol/ontology_utility.json` and implemented by
+`scripts/analyze_ontology_utility.py`.
 
 Only ontology terms represented by at least three independent configurations in
 both calibration and evaluation will receive a term-specific model comparison.

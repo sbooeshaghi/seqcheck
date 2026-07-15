@@ -163,6 +163,14 @@ class RunPerturbationCalibrationTests(unittest.TestCase):
         self.assertTrue(
             all(value["ontology_terms"] == "RGN:technical:linker" for value in metrics)
         )
+        self.assertTrue(all(value["sequence_types"] == "fixed" for value in metrics))
+        self.assertTrue(
+            all(
+                value["region_annotations_json"]
+                == '[{"ontology_terms":["RGN:technical:linker"],"region_id":"linker","sequence_type":"fixed"}]'
+                for value in metrics
+            )
+        )
         self.assertTrue(
             all(
                 value["assessment_code"] == "fixed_exact_match_partial"
