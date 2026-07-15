@@ -1,0 +1,42 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "region-ontology-mapping-survey",
+  "population": {
+    "required_hydration_status": "normalized",
+    "required_normalized_seqspec_version": "0.5.0",
+    "include_container_regions": true,
+    "pair_regions_by": "modality_and_region_id_path"
+  },
+  "mapping": {
+    "unknown_term": "RGN:unknown:unclassified",
+    "require_registry_runtime_parity": true,
+    "require_exact_upgrade_mapping": true,
+    "query_semantics": "seqspec_region_type_matches",
+    "classify_unknown_collapse_as_expected": true
+  },
+  "manual_review": {
+    "sample_size": 300,
+    "selection_seed": 20260714,
+    "rare_label_max_population_count": 20,
+    "stratum_precedence": [
+      "unknown",
+      "multi_term",
+      "rare_label",
+      "common"
+    ],
+    "target_allocations": {
+      "unknown": 75,
+      "multi_term": 75,
+      "rare_label": 100,
+      "common": 50
+    },
+    "allocation_shortfall": "round_robin_stratum_precedence",
+    "reviewers": 2,
+    "blind_registry_mapping": true
+  },
+  "scientific_targets": {
+    "unexpected_query_changes_max": 0,
+    "weighted_mapping_precision_min": 0.95,
+    "cohen_kappa_min": 0.8
+  }
+}
