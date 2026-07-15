@@ -157,3 +157,32 @@ stdout and stderr but no synthetic report. Raw metrics, assessments, ontology
 terms, command lines, process outcomes, runtime, and memory are written before
 any detection threshold is fit. `validation/perturbation_execution.json` must
 report `valid: true` before calibration analysis.
+
+Fit the predeclared detection policy on calibration configurations only:
+
+```bash
+python3 scripts/analyze_perturbation_calibration.py \
+  --execution-manifest experiments/paper/runs/<run-id>/perturbation-execution/manifests/execution.json \
+  --analysis-protocol experiments/paper/protocol/perturbation_analysis.json \
+  --output-root experiments/paper/runs/<run-id>/perturbation-analysis
+```
+
+The analyzer pairs each condition with its configuration's clean report and
+retains only metrics at the declared file, read, and region target. Seeded
+stochastic repeats are collapsed within a configuration. Stochastic policy
+endpoints use the predeclared 1% anchor, while deterministic endpoints use all
+applicable calibration conditions. A numeric endpoint requires at least six
+independent configurations and 80% directional consistency. Its threshold is
+the larger of the unit floor and half the lower empirical decile of absolute
+effects. Assessment evidence must reach 80% support both across seeds within a
+configuration and across configurations. Expected process failures must match a
+declared stderr pattern; file localization also requires the affected input name
+in stderr.
+
+The output includes paired metric effects, endpoint candidates, condition-level
+detection and localization calls, directional monotonicity checks, and a
+content-addressed detection policy. `validation/perturbation_analysis.json` may
+be valid while the policy remains unfrozen. The policy is usable on the locked
+evaluation set only when `policy/detection_policy.json` reports `frozen: true`.
+Scientific target checks in the validation file describe calibration behavior
+only; final paper estimates come from the 18 evaluation configurations.

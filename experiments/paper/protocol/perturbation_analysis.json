@@ -1,0 +1,26 @@
+{
+  "schema_version": "0.1.0",
+  "analysis_id": "controlled-perturbation-calibration",
+  "calibration": {
+    "minimum_independent_configurations_per_variant": 6,
+    "stochastic_anchor_fraction": 0.01,
+    "minimum_direction_consistency": 0.8,
+    "minimum_assessment_support": 0.8,
+    "threshold_fraction_of_p10_effect": 0.5,
+    "numeric_epsilon": 1e-12,
+    "unit_threshold_floors": {
+      "fraction": 0.001,
+      "count": 1.0,
+      "bases": 1.0,
+      "bits": 0.001,
+      "": 0.001
+    }
+  },
+  "scientific_targets": {
+    "deterministic_sensitivity_min": 0.95,
+    "clean_specificity_min": 0.95,
+    "localization_accuracy_min": 0.95,
+    "stochastic_one_percent_sensitivity_min": 0.9,
+    "monotonic_series_fraction_min": 0.9
+  }
+}

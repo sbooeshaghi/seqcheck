@@ -417,6 +417,17 @@ only to fix metric thresholds, applicability rules, and binary detection rules.
 Write these rules to a versioned policy file before running the 18 evaluation
 configurations.
 
+`scripts/analyze_perturbation_calibration.py` implements this boundary. It pairs
+each condition with its clean report and restricts evidence to the declared
+target scope. Numeric endpoints require at least six independent applicable
+configurations and 80% directional consistency. Their thresholds use the larger
+of a unit-specific floor and half the lower empirical decile of calibration
+effects. Stochastic thresholds are fit at the predeclared 1% event fraction
+after collapsing the three seeds within each configuration. Assessment rules
+must appear in at least 80% of seeds within a configuration and in at least 80%
+of independent configurations. These constants are frozen in
+`experiments/paper/protocol/perturbation_analysis.json`.
+
 For every evaluation condition, retain the raw metric response even when a binary
 threshold is not defensible. A perturbation is localized correctly only when the
 reported file, read, and region include the mutated target at every applicable
