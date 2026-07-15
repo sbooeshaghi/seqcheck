@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare blinded ontology reviews and merge two completed review sheets."""
+"""Prepare, verify, and merge blinded ontology review packages."""
 
 from __future__ import annotations
 
@@ -135,12 +135,16 @@ TERM_REFERENCE_FIELDS = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prepare or merge blinded region ontology reviews."
+        description="Prepare, verify, or merge blinded region ontology reviews."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     prepare = subparsers.add_parser("prepare")
     add_source_arguments(prepare)
     prepare.add_argument("--output-root", required=True, type=Path)
+    verify = subparsers.add_parser("verify")
+    add_source_arguments(verify)
+    verify.add_argument("--package", required=True, type=Path)
+    verify.add_argument("--sheet", required=True, type=Path)
     merge = subparsers.add_parser("merge")
     add_source_arguments(merge)
     merge.add_argument("--reviewer-1-package", required=True, type=Path)
@@ -171,6 +175,12 @@ def main() -> int:
     try:
         if args.command == "prepare":
             prepare_review_packages(output_root=args.output_root.resolve(), **common)
+        elif args.command == "verify":
+            verify_prepared_review_package(
+                package_path=args.package.resolve(),
+                sheet_path=args.sheet.resolve(),
+                **common,
+            )
         else:
             merge_review_packages(
                 reviewer_1_package=args.reviewer_1_package.resolve(),
@@ -260,6 +270,57 @@ def prepare_review_packages(
         f"{len(source['sample_rows'])} regions (survey_id={source['survey_id']})"
     )
     return manifest
+
+
+def verify_prepared_review_package(
+    *,
+    survey_manifest_path: Path,
+    registry_path: Path,
+    protocol_path: Path,
+    yq_bin: Path,
+    package_path: Path,
+    sheet_path: Path,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    source = load_source(
+        survey_manifest_path=survey_manifest_path,
+        registry_path=registry_path,
+        protocol_path=protocol_path,
+        yq_bin=yq_bin,
+        timeout_seconds=timeout_seconds,
+    )
+    package = runtime.load_json(package_path)
+    slot = package.get("review_slot")
+    if isinstance(slot, bool) or not isinstance(slot, int) or slot not in {1, 2}:
+        raise ValueError("ontology review package slot must be 1 or 2")
+    validate_package(package_path, package, slot, source)
+    rows, fields = read_csv(sheet_path)
+    expected_fields = [*PACKAGE_FIELDS, *CONTEXT_FIELDS, *EDITABLE_FIELDS]
+    expected_rows, _ = expected_package_rows(
+        slot=slot,
+        source=source,
+        package_id=package["package_id"],
+    )
+    if fields != expected_fields or rows != [
+        {field: str(row[field]) for field in expected_fields} for row in expected_rows
+    ]:
+        raise ValueError(f"reviewer {slot} prepared ontology sheet changed")
+    prepared = package.get("prepared_sheet")
+    if not isinstance(prepared, dict):
+        raise ValueError(f"reviewer {slot} prepared sheet identity is malformed")
+    verify_file_identity(sheet_path, prepared, f"reviewer {slot} prepared sheet")
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "valid": True,
+        "package_id": package["package_id"],
+        "review_slot": slot,
+        "review_rows": len(rows),
+    }
+    print(
+        f"verified ontology review package {result['package_id']} "
+        f"for reviewer {slot} ({result['review_rows']} rows)"
+    )
+    return result
 
 
 def prepare_one_package(

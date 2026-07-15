@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare independent cohort review sheets and merge locked reviews."""
+"""Prepare, verify, and merge independent cohort review packages."""
 
 from __future__ import annotations
 
@@ -62,8 +62,8 @@ SAFE_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9._-]+$")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Prepare blinded cohort review sheets or merge two completed sheets "
-            "without trusting copied candidate fields."
+            "Prepare, verify, or merge blinded cohort reviews without trusting "
+            "copied candidate fields."
         )
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -73,6 +73,13 @@ def parse_args() -> argparse.Namespace:
     )
     add_candidate_arguments(prepare)
     prepare.add_argument("--output-root", required=True, type=Path)
+
+    verify = subparsers.add_parser(
+        "verify", description="Verify one untouched review package before handoff."
+    )
+    add_candidate_arguments(verify)
+    verify.add_argument("--package", required=True, type=Path)
+    verify.add_argument("--sheet", required=True, type=Path)
 
     merge = subparsers.add_parser(
         "merge", description="Validate and merge two completed review packages."
@@ -100,6 +107,14 @@ def main() -> int:
                 candidate_manifest_path=args.candidate_manifest,
                 candidate_path=args.candidates,
                 output_root=args.output_root,
+                correction_registry_path=args.correction_registry,
+            )
+        elif args.command == "verify":
+            verify_prepared_review_package(
+                candidate_manifest_path=args.candidate_manifest,
+                candidate_path=args.candidates,
+                package_path=args.package,
+                sheet_path=args.sheet,
                 correction_registry_path=args.correction_registry,
             )
         else:
@@ -199,6 +214,55 @@ def prepare_review_packages(
         f"(selection_id={source['selection_id']})"
     )
     return manifests
+
+
+def verify_prepared_review_package(
+    *,
+    candidate_manifest_path: Path,
+    candidate_path: Path | None,
+    package_path: Path,
+    sheet_path: Path,
+    correction_registry_path: Path | None = None,
+) -> dict[str, Any]:
+    source = load_candidate_source(
+        candidate_manifest_path, candidate_path, correction_registry_path
+    )
+    package = load_json(package_path)
+    slot = package.get("review_slot")
+    if isinstance(slot, bool) or not isinstance(slot, int) or slot not in {1, 2}:
+        raise ValueError("review package slot must be 1 or 2")
+    evidence = load_review_evidence(
+        package_path=package_path,
+        sheet_path=sheet_path,
+        expected_slot=slot,
+        source=source,
+        package=package,
+    )
+    prepared = package.get("prepared_sheet")
+    if not isinstance(prepared, dict):
+        raise ValueError(f"reviewer {slot} prepared sheet identity is malformed")
+    if file_sha256(sheet_path) != prepared.get(
+        "sha256"
+    ) or sheet_path.stat().st_size != prepared.get("size_bytes"):
+        raise ValueError(f"reviewer {slot} prepared sheet changed before review")
+    if any(
+        row.get(field, "")
+        for row in evidence["rows_by_key"].values()
+        for field in REVIEW_INPUT_FIELDS
+    ):
+        raise ValueError(f"reviewer {slot} prepared sheet already contains responses")
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "valid": True,
+        "package_id": evidence["package_id"],
+        "review_slot": slot,
+        "candidate_rows": len(evidence["rows_by_key"]),
+    }
+    print(
+        f"verified cohort review package {result['package_id']} "
+        f"for reviewer {slot} ({result['candidate_rows']} rows)"
+    )
+    return result
 
 
 def merge_review_packages(
@@ -413,7 +477,42 @@ def load_completed_review(
     expected_slot: int,
     source: dict[str, Any],
 ) -> dict[str, Any]:
-    package = load_json(package_path)
+    evidence = load_review_evidence(
+        package_path=package_path,
+        sheet_path=sheet_path,
+        expected_slot=expected_slot,
+        source=source,
+    )
+    rows_by_key = evidence["rows_by_key"]
+    reviewers = set()
+    decision_counts: Counter[str] = Counter()
+    for source_row in source["review_evidence_rows"]:
+        key = row_key(source_row)
+        row = rows_by_key[key]
+        validate_review_input(row, expected_slot, key)
+        reviewers.add(row["reviewer"].strip())
+        decision_counts[row["decision"].strip()] += 1
+
+    if len(reviewers) != 1:
+        raise ValueError(
+            f"reviewer {expected_slot} sheet must use exactly one reviewer identity"
+        )
+    return {
+        "reviewer": next(iter(reviewers)),
+        "rows_by_key": rows_by_key,
+        "decision_counts": dict(sorted(decision_counts.items())),
+    }
+
+
+def load_review_evidence(
+    *,
+    package_path: Path,
+    sheet_path: Path,
+    expected_slot: int,
+    source: dict[str, Any],
+    package: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    package = package if package is not None else load_json(package_path)
     if package.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(f"reviewer {expected_slot} package uses an unknown schema")
     if package.get("review_slot") != expected_slot:
@@ -487,8 +586,6 @@ def load_completed_review(
         )
 
     evidence_rows = []
-    reviewers = set()
-    decision_counts: Counter[str] = Counter()
     for evidence in source["review_evidence_rows"]:
         key = row_key(evidence)
         row = rows_by_key[key]
@@ -506,24 +603,16 @@ def load_completed_review(
                 f"reviewer {expected_slot} changed candidate evidence for "
                 f"{'/'.join(key)}: {', '.join(changed)}"
             )
-        validate_review_input(row, expected_slot, key)
-        reviewers.add(row["reviewer"].strip())
-        decision_counts[row["decision"].strip()] += 1
         evidence_rows.append(row)
 
-    if len(reviewers) != 1:
-        raise ValueError(
-            f"reviewer {expected_slot} sheet must use exactly one reviewer identity"
-        )
     observed_evidence_sha = evidence_sha(
         evidence_rows, source["review_evidence_fields"]
     )
     if observed_evidence_sha != package.get("review_evidence_sha256"):
         raise ValueError(f"reviewer {expected_slot} sheet evidence hash changed")
     return {
-        "reviewer": next(iter(reviewers)),
+        "package_id": package_id,
         "rows_by_key": rows_by_key,
-        "decision_counts": dict(sorted(decision_counts.items())),
     }
 
 

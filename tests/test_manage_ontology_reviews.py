@@ -1,6 +1,7 @@
 import csv
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -334,6 +335,42 @@ class ManageOntologyReviewTests(unittest.TestCase):
                     timeout_seconds=10,
                 )
 
+    def test_verify_accepts_relocated_untouched_package_and_rejects_changes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = create_source(root / "source")
+            packages = prepare(root, source)
+            relocated = root / "relocated-reviewer-1"
+            shutil.copytree(packages / "reviewer_1", relocated)
+            result = MODULE.verify_prepared_review_package(
+                survey_manifest_path=source["manifest"],
+                registry_path=source["registry"],
+                protocol_path=source["protocol"],
+                yq_bin=source["yq"],
+                package_path=relocated / "review_package.json",
+                sheet_path=relocated / "ontology_review.csv",
+                timeout_seconds=10,
+            )
+            rows, fields = read_csv(relocated / "ontology_review.csv")
+            rows[0]["confidence"] = "high"
+            write_csv(relocated / "ontology_review.csv", rows, fields)
+
+            with self.assertRaisesRegex(ValueError, "prepared ontology sheet changed"):
+                MODULE.verify_prepared_review_package(
+                    survey_manifest_path=source["manifest"],
+                    registry_path=source["registry"],
+                    protocol_path=source["protocol"],
+                    yq_bin=source["yq"],
+                    package_path=relocated / "review_package.json",
+                    sheet_path=relocated / "ontology_review.csv",
+                    timeout_seconds=10,
+                )
+
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["review_rows"], 4)
+
     def test_merge_canonicalizes_term_order_and_recovers_truth(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -499,6 +536,23 @@ class ManageOntologyReviewTests(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            verified = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "verify",
+                    *common,
+                    "--package",
+                    str(packages / "reviewer_1" / "review_package.json"),
+                    "--sheet",
+                    str(packages / "reviewer_1" / "ontology_review.csv"),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+            self.assertIn("verified ontology review package", verified.stdout)
             complete_sheet(packages, 1, "Reviewer A")
             complete_sheet(packages, 2, "Reviewer B")
             merged = subprocess.run(

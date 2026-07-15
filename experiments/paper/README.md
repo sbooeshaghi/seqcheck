@@ -15,6 +15,31 @@ self-contained: it includes the editable sheet, instructions, protocol,
 normalized specs, any proposed correction bundle, and a manifest of portable
 relative paths and hashes. Give each reviewer only their assigned directory.
 
+Before handoff, relocate or copy each assigned directory to its delivery
+location and verify the untouched package there. This detects a changed sheet,
+missing or modified evidence, unsafe links, and source-identity drift before a
+reviewer starts manual work:
+
+```bash
+python3 scripts/manage_cohort_reviews.py verify \
+  --candidate-manifest experiments/paper/runs/<run>/manifests/cohort_candidates.json \
+  --correction-registry experiments/paper/runs/<run>/corrections/correction_registry.json \
+  --package <reviewer-dir>/review_package.json \
+  --sheet <reviewer-dir>/cohort_review.csv
+
+python3 scripts/manage_ontology_reviews.py verify \
+  --survey-manifest experiments/paper/runs/<survey-run>/manifests/ontology_survey.json \
+  --registry ../seqspec/docs/region_ontology_registry.yaml \
+  --protocol experiments/paper/protocol/ontology_mapping.json \
+  --yq-bin "$(command -v yq)" \
+  --package <reviewer-dir>/review_package.json \
+  --sheet <reviewer-dir>/ontology_review.csv
+```
+
+Run `verify` only on the blank handoff. A completed sheet is expected to differ
+from its prepared identity and is validated by the corresponding `merge`
+command instead.
+
 Run the Phase 0 acceptance gate before generating study results:
 
 ```bash

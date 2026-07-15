@@ -1,6 +1,7 @@
 import csv
 import importlib.util
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -248,6 +249,41 @@ class ManageCohortReviewsTests(unittest.TestCase):
                     candidate_path=None,
                     output_root=output_root,
                 )
+
+    def test_verify_accepts_relocated_untouched_package_and_rejects_changes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest_path, _, candidates = make_candidate_source(root)
+            packages = root / "packages"
+            MODULE.prepare_review_packages(
+                candidate_manifest_path=manifest_path,
+                candidate_path=None,
+                output_root=packages,
+            )
+            relocated = root / "relocated-reviewer-1"
+            shutil.copytree(packages / "reviewer_1", relocated)
+            result = MODULE.verify_prepared_review_package(
+                candidate_manifest_path=manifest_path,
+                candidate_path=None,
+                package_path=relocated / "review_package.json",
+                sheet_path=relocated / "cohort_review.csv",
+            )
+            rows, fields = read_csv(relocated / "cohort_review.csv")
+            rows[0]["decision"] = "include"
+            write_csv(relocated / "cohort_review.csv", rows, fields)
+
+            with self.assertRaisesRegex(ValueError, "prepared sheet changed"):
+                MODULE.verify_prepared_review_package(
+                    candidate_manifest_path=manifest_path,
+                    candidate_path=None,
+                    package_path=relocated / "review_package.json",
+                    sheet_path=relocated / "cohort_review.csv",
+                )
+
+        self.assertTrue(result["valid"])
+        self.assertEqual(result["candidate_rows"], len(candidates))
 
     def test_merge_is_deterministic_and_uses_authoritative_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -573,6 +609,24 @@ class ManageCohortReviewsTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(prepare.returncode, 0, prepare.stderr)
+            verify = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "verify",
+                    "--candidate-manifest",
+                    str(manifest_path),
+                    "--package",
+                    str(packages / "reviewer_1" / "review_package.json"),
+                    "--sheet",
+                    str(packages / "reviewer_1" / "cohort_review.csv"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(verify.returncode, 0, verify.stderr)
+            self.assertIn("verified cohort review package", verify.stdout)
             complete_sheet(packages / "reviewer_1" / "cohort_review.csv", "Reviewer A")
             complete_sheet(packages / "reviewer_2" / "cohort_review.csv", "Reviewer B")
             merge = subprocess.run(

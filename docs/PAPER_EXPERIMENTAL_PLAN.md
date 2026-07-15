@@ -149,8 +149,10 @@ Reviewers follow `docs/COHORT_REVIEW_PROTOCOL.md`.
 `scripts/manage_cohort_reviews.py` creates two independent, content-addressed
 review packages. Each package includes instructions, the review protocol,
 normalized specs, correction evidence, and portable content identities. The
-merge accepts only complete sheets from distinct reviewers, verifies the
-packaged materials and copied evidence against the candidate table, and
+coordinator runs the package verifier after copying each blank handoff to its
+delivery location, before manual work begins. The merge accepts only complete
+sheets from distinct reviewers, verifies the packaged materials and copied
+evidence against the candidate table, and
 reconstructs the combined table from the authoritative candidate rows. After
 both reviews and any adjudication are locked, `scripts/freeze_cohort.py`
 reconciles the final review table to the candidate manifest and assigns the
