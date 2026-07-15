@@ -82,7 +82,7 @@ class IgvfAuditTests(unittest.TestCase):
             },
             "tools": {
                 "audit_runtime": {
-                    "version": "0.4.0",
+                    "version": "0.4.1",
                     "path": "/tmp/igvf_audit.py",
                     "sha256": "a" * 64,
                     "python": "3.12.0",
@@ -563,7 +563,7 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertEqual(
             annotated["audit_summary"],
             {
-                "audit_schema_version": "0.4.0",
+                "audit_schema_version": "0.4.1",
                 "study_run_id": "study-1",
                 "cache_key": "cache-1",
                 "sampling_method": "prefix",
@@ -869,6 +869,8 @@ class IgvfAuditTests(unittest.TestCase):
             )
 
         self.assertEqual(manifest["run_id"], first.run_id)
+        self.assertEqual(manifest["tools"]["audit_runner"]["version"], "0.4.1")
+        self.assertEqual(len(manifest["tools"]["audit_runner"]["sha256"]), 64)
         self.assertEqual(manifest["tools"]["fastqc"]["version"], "FastQC v0.12.1")
         self.assertEqual(manifest["auth"]["requested_profile"], "igvf")
         self.assertFalse(manifest["auth"]["seqcheck_profile_ready"])

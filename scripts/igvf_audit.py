@@ -30,7 +30,7 @@ from typing import Any
 USER_AGENT = "seqcheck-igvf-audit/0.1"
 DEFAULT_API_ROOT = "https://api.data.igvf.org/"
 DEFAULT_PORTAL_ROOT = DEFAULT_API_ROOT
-AUDIT_SCHEMA_VERSION = "0.4.0"
+AUDIT_SCHEMA_VERSION = "0.4.1"
 PORTAL_MANIFEST_SCHEMA_VERSION = "0.1.0"
 SAMPLING_POLICY_SCHEMA_VERSION = "0.1.0"
 AUDIT_PROTOCOL_SCHEMA_VERSION = "0.1.0"
@@ -1401,6 +1401,9 @@ def write_study_manifest(
         sampling_policy,
         audit_protocol,
     )
+    audit_runner_identity = build_script_identity(
+        Path(__file__).resolve(), version=AUDIT_SCHEMA_VERSION
+    )
     stable_manifest = {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "sampling_method": sampling_method,
@@ -1423,6 +1426,7 @@ def write_study_manifest(
         },
         "frozen_inputs": frozen_inputs,
         "tools": {
+            "audit_runner": audit_runner_identity,
             "seqcheck": asdict(seqcheck_identity),
             "seqspec": asdict(seqspec_identity),
             "fastqc": build_external_tool_identity(
@@ -1434,6 +1438,7 @@ def write_study_manifest(
     run_identity = {
         **stable_manifest,
         "tools": {
+            "audit_runner": functional_script_identity(audit_runner_identity),
             "seqcheck": functional_tool_identity(seqcheck_identity),
             "seqspec": functional_tool_identity(seqspec_identity),
             "fastqc": functional_external_tool_identity(
@@ -1554,6 +1559,34 @@ def build_external_tool_identity(
         "version": command_output([resolved, "--version"]) if resolved else "",
         "executable_sha256": file_sha256(Path(resolved)) if resolved else "",
         "configuration": configuration,
+    }
+
+
+def build_script_identity(path: Path, *, version: str) -> dict[str, Any]:
+    path = path.resolve()
+    repo_root = path.parents[1]
+    status = git_output(
+        repo_root,
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+        "--",
+        str(path.relative_to(repo_root)),
+    )
+    return {
+        **file_identity(path),
+        "version": version,
+        "git_commit": git_output(repo_root, "rev-parse", "HEAD"),
+        "git_dirty": bool(status),
+        "python": sys.version.split()[0],
+    }
+
+
+def functional_script_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "version": identity["version"],
+        "sha256": identity["sha256"],
+        "python": identity["python"],
     }
 
 
