@@ -525,6 +525,16 @@ per-sequence quality. This rule is fixed in
 `experiments/paper/protocol/complementarity.json`; it does not treat an existing
 warning or failure in the clean file as a perturbation response.
 
+`scripts/analyze_complementarity_calibration.py` writes the frozen quality policy.
+`scripts/evaluate_complementarity.py` then applies that policy and the frozen
+Experiment 2 seqcheck policy without refitting either one. The primary structural
+comparison includes deterministic defects and stochastic defects at the fixed 1%
+anchor, excluding controls whose seqspec document is expected to fail validation.
+This gives each configuration one paired seqcheck-minus-FastQC rate instead of
+over-weighting operators that have five stochastic severity levels. FastQC gets
+credit for any worsened module on these structural defects, which makes the
+primary contrast conservative in FastQC's favor.
+
 Add two schema-invalid seqspec controls, one missing a required field and one
 violating a region constraint. `seqspec check` should reject both. These controls
 are reported separately from the internally valid-but-wrong structural set.

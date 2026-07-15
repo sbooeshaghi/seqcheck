@@ -55,6 +55,12 @@
     }
   ],
   "quality_seed": 401,
+  "primary_structural_scope": {
+    "include_deterministic": true,
+    "stochastic_event_fraction": 0.01,
+    "exclude_expected_seqspec_failure": true,
+    "fastqc_module_scope": "all_modules"
+  },
   "composition_controls": [
     {
       "operator_id": "C01",

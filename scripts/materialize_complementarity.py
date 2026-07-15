@@ -868,6 +868,16 @@ def validate_protocol(protocol: dict[str, Any]) -> None:
         validate_modules(value)
     if any(value.get("expected_seqspec_check") != "failure" for value in invalid):
         raise ValueError("schema-invalid controls must expect seqspec failure")
+    scope = protocol.get("primary_structural_scope", {})
+    if scope.get("include_deterministic") is not True:
+        raise ValueError("primary structural scope must include deterministic defects")
+    controls.unit_fraction(
+        scope.get("stochastic_event_fraction"), "stochastic anchor fraction"
+    )
+    if scope.get("exclude_expected_seqspec_failure") is not True:
+        raise ValueError("primary structural scope must exclude invalid specs")
+    if scope.get("fastqc_module_scope") != "all_modules":
+        raise ValueError("primary structural FastQC scope must include all modules")
 
 
 def validate_modules(value: dict[str, Any]) -> None:

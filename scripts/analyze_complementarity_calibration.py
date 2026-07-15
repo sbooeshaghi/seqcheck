@@ -241,7 +241,7 @@ def load_execution(path: Path) -> dict[str, Any]:
     materialization_path = verified_path(
         execution.get("inputs", {}).get("materialization", {}), "materialization"
     )
-    complementarity, _, base_conditions, controls = (
+    complementarity, base, base_conditions, controls = (
         execution_runner.load_materialization(materialization_path)
     )
     if complementarity["complementarity_id"] != execution["complementarity_id"]:
@@ -283,6 +283,7 @@ def load_execution(path: Path) -> dict[str, Any]:
     return {
         "execution": execution,
         "complementarity": complementarity,
+        "base": base,
         "base_conditions": base_conditions,
         "controls": controls,
         **tables,
