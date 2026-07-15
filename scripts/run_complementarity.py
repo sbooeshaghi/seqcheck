@@ -27,6 +27,19 @@ except ModuleNotFoundError:
 
 SCHEMA_VERSION = "0.1.0"
 RUNNER_VERSION = "0.1.0"
+EXECUTION_IDENTITY_FIELDS = (
+    "schema_version",
+    "complementarity_id",
+    "materialization_sha256",
+    "protocol_sha256",
+    "seqcheck",
+    "seqspec",
+    "fastqc",
+    "runner",
+    "fastqc_parser",
+    "seqcheck_runner",
+    "runtime",
+)
 SEQSPEC_RUN_FIELDS = (
     "execution_id",
     "condition_source",

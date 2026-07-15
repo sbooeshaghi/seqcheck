@@ -4,6 +4,7 @@
   "calibration": {
     "minimum_independent_configurations": 6,
     "minimum_fastqc_detection_rate": 0.9,
+    "minimum_quality_score_decrease": 1.0,
     "severity_selection": "least_severe_candidate_meeting_target"
   },
   "quality_controls": [

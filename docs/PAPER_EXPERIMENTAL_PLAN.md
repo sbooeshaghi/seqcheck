@@ -517,6 +517,14 @@ evaluation split is materialized. A composition control without a long enough
 projected measurement payload is recorded as inapplicable rather than moved into
 a fixed, onlist, partition, primer, or linker interval.
 
+Quality calibration compares only the operator's predeclared FastQC module with
+the matched clean file. A condition is detected when the module status worsens or
+when its raw quality summary decreases by at least 1 Phred score. The raw summary
+is the minimum cycle mean for per-base quality and the count-weighted mean for
+per-sequence quality. This rule is fixed in
+`experiments/paper/protocol/complementarity.json`; it does not treat an existing
+warning or failure in the clean file as a perturbation response.
+
 Add two schema-invalid seqspec controls, one missing a required field and one
 violating a region constraint. `seqspec check` should reject both. These controls
 are reported separately from the internally valid-but-wrong structural set.
