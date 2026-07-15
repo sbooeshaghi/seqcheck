@@ -794,6 +794,25 @@ data access, and availability of a relevant pipeline, not on the size of the
 after-correction result. Record one primary endpoint and its expected direction
 before running each corrected analysis.
 
+Register candidate case studies before execution. Each registry entry names one
+confirmed review case, access and pipeline readiness, an immutable pipeline
+version, one endpoint and minimum meaningful change, and exact before/after
+argv arrays and input files. Hash complete read files, specs, resources,
+pipeline scripts, and executables during selection. Shared inputs must have the
+same content in both conditions, at least one nonshared input must change, and
+the normalized commands must be identical after replacing role-labeled input
+paths. Shell command strings are not allowed. Select three to five ready cases
+by deterministic round-robin coverage of defect class, assay family, access
+class, and pipeline. The registry contains no downstream endpoint values, so
+selection cannot depend on the observed after-correction effect.
+
+Each condition writes a three-field `endpoint.json` containing the predeclared
+endpoint ID, numeric value, and unit. Run all selected before/after conditions
+even when one fails, retain stdout, stderr, resource use, endpoint identity, and
+a hash inventory of every output file, then reconcile all condition and paired
+result counts. A valid run can miss the expected-direction target; process,
+input, or endpoint-contract failures make the run mechanically invalid.
+
 Complete-file processing is allowed only for these selected downstream cases.
 The primary adjudication result is confirmation precision by assessment class.
 Inconclusive cases remain in the denominator but are reported separately.

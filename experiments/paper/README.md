@@ -375,3 +375,40 @@ conservative precision with inconclusive cases in the denominator, evaluable
 precision with inconclusive cases removed, Wilson intervals, Cohen's kappa, and
 pass-control consistency. Review-stage target status is separate from the
 downstream case-study targets, which are evaluated later.
+
+After audit review analysis, create a case registry from
+`protocol/downstream_case_registry.template.json`. The registry must refer only
+to confirmed case IDs and must predeclare the complete-file inputs, identical
+before/after command structure, changed spec or resource, primary endpoint,
+expected direction, and minimum meaningful change. Freeze three to five cases:
+
+```bash
+python3 scripts/build_downstream_cases.py \
+  --review-analysis-manifest experiments/paper/runs/<run-id>/audit-review-analysis/manifests/audit_review_analysis.json \
+  --case-registry experiments/paper/runs/<run-id>/downstream-case-registry.json \
+  --protocol experiments/paper/protocol/downstream_cases.json \
+  --output-root experiments/paper/runs/<run-id>/downstream-case-selection
+```
+
+The builder hashes every input and executable, rejects unconfirmed cases,
+requires unchanged shared inputs, and rejects before/after commands that differ
+after replacing declared input paths. Unready registry entries remain in the
+eligibility count but are not selected. No endpoint result is accepted in the
+registry.
+
+Run the frozen cases without editing the selection manifest or any input:
+
+```bash
+python3 scripts/run_downstream_cases.py \
+  --case-manifest experiments/paper/runs/<run-id>/downstream-case-selection/manifests/downstream_cases.json \
+  --protocol experiments/paper/protocol/downstream_cases.json \
+  --output-root experiments/paper/runs/<run-id>/downstream-execution
+```
+
+Each command must write `<output_dir>/endpoint.json` with exactly
+`endpoint_id`, `value`, and `unit`. The runner executes both conditions for all
+selected cases, records failures rather than stopping early, hashes every
+output, and compares the paired endpoint only with its predeclared direction and
+minimum change. `validation/downstream_execution.json` reports mechanical
+validity separately from the requirement that at least two cases change in the
+expected direction.

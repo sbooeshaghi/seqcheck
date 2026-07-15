@@ -1,0 +1,78 @@
+{
+  "schema_version": "0.1.0",
+  "review_analysis_id": "replace-with-audit-review-analysis-id",
+  "cases": [
+    {
+      "case_id": "replace-with-confirmed-review-case-id",
+      "access_available": true,
+      "pipeline_available": true,
+      "presentation_ready": true,
+      "pipeline": {
+        "id": "pipeline-name",
+        "version": "immutable-version-or-container-digest"
+      },
+      "endpoint": {
+        "id": "primary-endpoint-id",
+        "label": "Primary endpoint label",
+        "unit": "fraction",
+        "direction": "increase",
+        "minimum_meaningful_change": 0.01
+      },
+      "shared_input_roles": [
+        "reads"
+      ],
+      "before": {
+        "inputs": [
+          {
+            "role": "reads",
+            "path": "/absolute/path/to/complete.fastq.gz"
+          },
+          {
+            "role": "seqspec",
+            "path": "/absolute/path/to/original.yaml"
+          },
+          {
+            "role": "pipeline_script",
+            "path": "/absolute/path/to/pipeline.py"
+          }
+        ],
+        "command": [
+          "/absolute/path/to/python",
+          "/absolute/path/to/pipeline.py",
+          "--reads",
+          "/absolute/path/to/complete.fastq.gz",
+          "--seqspec",
+          "/absolute/path/to/original.yaml",
+          "--output",
+          "{output_dir}"
+        ]
+      },
+      "after": {
+        "inputs": [
+          {
+            "role": "reads",
+            "path": "/absolute/path/to/complete.fastq.gz"
+          },
+          {
+            "role": "seqspec",
+            "path": "/absolute/path/to/corrected.yaml"
+          },
+          {
+            "role": "pipeline_script",
+            "path": "/absolute/path/to/pipeline.py"
+          }
+        ],
+        "command": [
+          "/absolute/path/to/python",
+          "/absolute/path/to/pipeline.py",
+          "--reads",
+          "/absolute/path/to/complete.fastq.gz",
+          "--seqspec",
+          "/absolute/path/to/corrected.yaml",
+          "--output",
+          "{output_dir}"
+        ]
+      }
+    }
+  ]
+}

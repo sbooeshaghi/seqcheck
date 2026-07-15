@@ -1,0 +1,49 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "downstream-case-studies",
+  "selection": {
+    "minimum_case_count": 3,
+    "target_case_count": 5,
+    "maximum_case_count": 5,
+    "selection_seed": 20260714,
+    "required_final_classifications": [
+      "confirmed_specification_problem",
+      "confirmed_read_or_resource_problem"
+    ],
+    "stratification_fields": [
+      "final_classification",
+      "matched_assay_family",
+      "access_class",
+      "pipeline_id"
+    ],
+    "required_readiness_flags": [
+      "access_available",
+      "pipeline_available",
+      "presentation_ready"
+    ]
+  },
+  "case_contract": {
+    "conditions": [
+      "before",
+      "after"
+    ],
+    "endpoint_output_filename": "endpoint.json",
+    "endpoint_directions": [
+      "increase",
+      "decrease"
+    ],
+    "minimum_shared_input_roles": 1,
+    "require_changed_nonshared_input": true,
+    "require_input_paths_in_argv": true,
+    "require_output_dir_placeholder": true,
+    "require_condition_command_parity": true,
+    "forbid_shell_command_strings": true
+  },
+  "execution": {
+    "condition_timeout_seconds": 86400
+  },
+  "scientific_targets": {
+    "minimum_presentable_confirmed_cases": 3,
+    "minimum_cases_with_expected_endpoint_change": 2
+  }
+}
