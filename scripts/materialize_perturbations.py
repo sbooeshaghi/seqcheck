@@ -135,6 +135,13 @@ def materialize_perturbations(
     output_root: Path,
     timeout_seconds: int,
 ) -> dict[str, Any]:
+    inventory_manifest_path = inventory_manifest_path.resolve()
+    study_manifest_path = study_manifest_path.resolve()
+    sampling_policy_path = sampling_policy_path.resolve()
+    perturbation_protocol_path = perturbation_protocol_path.resolve()
+    seqspec_bin = seqspec_bin.resolve()
+    yq_bin = yq_bin.resolve()
+    output_root = output_root.resolve()
     if timeout_seconds <= 0:
         raise ValueError("timeout must be positive")
     if output_root.exists():
@@ -204,7 +211,7 @@ def materialize_perturbations(
     with tempfile.TemporaryDirectory(
         prefix=f".{output_root.name}-", dir=output_root.parent
     ) as tmpdir:
-        temporary_root = Path(tmpdir)
+        temporary_root = Path(tmpdir).resolve()
         condition_rows = []
         skip_rows = []
         grouped_records = group_inventory_records(inventory_records)
@@ -1309,7 +1316,9 @@ def relocate_identity(
 ) -> dict[str, Any]:
     result = dict(value)
     if "path" in result:
-        path = Path(result["path"])
+        path = Path(result["path"]).resolve()
+        temporary_root = temporary_root.resolve()
+        output_root = output_root.resolve()
         if path.is_relative_to(temporary_root):
             result["path"] = str(output_root / path.relative_to(temporary_root))
     return result

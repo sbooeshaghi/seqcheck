@@ -125,6 +125,44 @@ def count_report_metrics(payload: dict[str, Any]) -> int:
     )
 
 
+def flatten_report_assessments(
+    payload: dict[str, Any], context: dict[str, Any]
+) -> list[dict[str, Any]]:
+    rows = []
+    for result_index, result in enumerate(payload.get("results", [])):
+        if not isinstance(result, dict):
+            continue
+        ontology_terms = ";".join(sorted(extract_ontology_terms(result)))
+        assessments = result.get("assessment", [])
+        if not isinstance(assessments, list):
+            continue
+        for assessment_index, assessment in enumerate(assessments):
+            if not isinstance(assessment, dict):
+                continue
+            rows.append(
+                {
+                    **context,
+                    "result_index": result_index,
+                    "assessment_index": assessment_index,
+                    "check": str(result.get("check", "")),
+                    "files": join_values(result.get("files", [])),
+                    "reads": join_values(result.get("reads", [])),
+                    "regions": join_values(result.get("regions", [])),
+                    "ontology_terms": ontology_terms,
+                    "assessment_type": str(assessment.get("type", "")),
+                    "assessment_code": str(assessment.get("code", "")),
+                    "assessment_description": str(assessment.get("description", "")),
+                    "expected_metric_ids": join_values(
+                        assessment.get("expected_ids", [])
+                    ),
+                    "observed_metric_ids": join_values(
+                        assessment.get("observed_ids", [])
+                    ),
+                }
+            )
+    return rows
+
+
 def extract_ontology_terms(value: Any) -> set[str]:
     terms = set()
     if isinstance(value, dict):

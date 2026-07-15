@@ -15,6 +15,37 @@ SPEC.loader.exec_module(MODULE)
 
 
 class PaperRuntimeTests(unittest.TestCase):
+    def test_flatten_report_assessments_preserves_scope_and_ontology(self) -> None:
+        payload = {
+            "results": [
+                {
+                    "check": "fixed",
+                    "files": ["R1"],
+                    "reads": ["read1"],
+                    "regions": ["linker"],
+                    "ontology": ["RGN:technical:linker"],
+                    "assessment": [
+                        {
+                            "type": "warning",
+                            "code": "fixed_exact_match_absent",
+                            "description": "No exact matches.",
+                            "expected_ids": ["e1"],
+                            "observed_ids": ["o1", "o2"],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        rows = MODULE.flatten_report_assessments(payload, {"condition_id": "c1"})
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["condition_id"], "c1")
+        self.assertEqual(rows[0]["regions"], "linker")
+        self.assertEqual(rows[0]["ontology_terms"], "RGN:technical:linker")
+        self.assertEqual(rows[0]["assessment_code"], "fixed_exact_match_absent")
+        self.assertEqual(rows[0]["observed_metric_ids"], "o1;o2")
+
     def test_measured_command_captures_outputs_and_resource_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

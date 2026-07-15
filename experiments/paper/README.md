@@ -140,3 +140,20 @@ source traversal. It hashes every generated spec, FASTQ, selected-record list,
 and bundled local resource. A stochastic fraction is generated only when it
 maps to an integer record count. `validation/materialization.json` must report
 `valid: true` before seqcheck execution begins.
+
+Run seqcheck once on every materialized condition and export the raw evidence:
+
+```bash
+python3 scripts/run_perturbation_calibration.py \
+  --materialization-manifest experiments/paper/runs/<run-id>/perturbations/manifests/materialization.json \
+  --execution-protocol experiments/paper/protocol/perturbation_execution.json \
+  --seqcheck-bin target/release/seqcheck \
+  --output-root experiments/paper/runs/<run-id>/perturbation-execution
+```
+
+The runner enforces the declared process outcome for each condition. Successful
+conditions must write a valid JSON report; expected command failures retain
+stdout and stderr but no synthetic report. Raw metrics, assessments, ontology
+terms, command lines, process outcomes, runtime, and memory are written before
+any detection threshold is fit. `validation/perturbation_execution.json` must
+report `valid: true` before calibration analysis.

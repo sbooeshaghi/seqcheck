@@ -1,0 +1,18 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "controlled-perturbation-execution",
+  "command": {
+    "n_reads": 0,
+    "format": "json"
+  },
+  "performance": {
+    "warmup_runs": 0,
+    "measured_runs": 1
+  },
+  "validation": {
+    "require_expected_process_outcome": true,
+    "require_json_report_on_success": true,
+    "require_no_timeout": true,
+    "require_one_run_per_condition": true
+  }
+}
