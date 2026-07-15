@@ -323,3 +323,55 @@ summarized across independent configurations by assay family, sequence type,
 and ontology term. Warnings and errors remain candidate inconsistencies rather
 than confirmed errors. `validation/igvf_audit_analysis.json` separates
 mechanical validity from the predeclared scientific targets.
+
+After the controlled perturbation policy and current IGVF audit analysis are
+both frozen, prepare the blinded Experiment 6 review sample:
+
+```bash
+python3 scripts/manage_audit_reviews.py prepare \
+  --audit-root experiments/paper/runs/<run-id>/igvf-audit-primary \
+  --audit-analysis experiments/paper/runs/<run-id>/igvf-analysis/validation/igvf_audit_analysis.json \
+  --detection-policy experiments/paper/runs/<run-id>/perturbation-analysis/policy/detection_policy.json \
+  --family-rules docs/cohort_family_rules.json \
+  --protocol experiments/paper/protocol/audit_adjudication.json \
+  --output-root experiments/paper/runs/<run-id>/audit-review-packages
+```
+
+Give each reviewer only their own `reviewer_<n>/` directory. Do not share
+`internal/review_key.csv`; it contains candidate/control status, original
+assessment labels, and the policy-derived high-confidence flag. After both
+reviewers complete every response, merge the sheets:
+
+```bash
+python3 scripts/manage_audit_reviews.py merge \
+  --audit-root experiments/paper/runs/<run-id>/igvf-audit-primary \
+  --audit-analysis experiments/paper/runs/<run-id>/igvf-analysis/validation/igvf_audit_analysis.json \
+  --detection-policy experiments/paper/runs/<run-id>/perturbation-analysis/policy/detection_policy.json \
+  --family-rules docs/cohort_family_rules.json \
+  --protocol experiments/paper/protocol/audit_adjudication.json \
+  --reviewer-1-package experiments/paper/runs/<run-id>/audit-review-packages/reviewer_1/review_package.json \
+  --reviewer-1-sheet experiments/paper/runs/<run-id>/audit-review-packages/reviewer_1/audit_review.csv \
+  --reviewer-2-package experiments/paper/runs/<run-id>/audit-review-packages/reviewer_2/review_package.json \
+  --reviewer-2-sheet experiments/paper/runs/<run-id>/audit-review-packages/reviewer_2/audit_review.csv \
+  --output-root experiments/paper/runs/<run-id>/audit-review-merge
+```
+
+Fill the adjudication fields in the merged `tables/audit_reviews.csv`. Every
+disagreement needs a third adjudicator, date, final classification, and
+rationale. Every row also needs `submitter_contacted` set to `yes`, `no`, or
+`not_attempted`; a `yes` value requires the response text. Analyze the completed
+copy without editing the original merged table:
+
+```bash
+python3 scripts/analyze_audit_reviews.py \
+  --review-manifest experiments/paper/runs/<run-id>/audit-review-merge/manifests/audit_reviews.json \
+  --adjudicated-reviews experiments/paper/runs/<run-id>/audit-review-adjudication/audit_reviews.csv \
+  --protocol experiments/paper/protocol/audit_adjudication.json \
+  --output-root experiments/paper/runs/<run-id>/audit-review-analysis
+```
+
+The analyzer rejects changed review evidence and consensus overrides. It writes
+conservative precision with inconclusive cases in the denominator, evaluable
+precision with inconclusive cases removed, Wilson intervals, Cohen's kappa, and
+pass-control consistency. Review-stage target status is separate from the
+downstream case-study targets, which are evaluated later.

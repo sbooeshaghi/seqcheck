@@ -1,0 +1,78 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "audit-adjudication",
+  "selection": {
+    "minimum_candidate_findings": 50,
+    "pass_control_findings": 20,
+    "selection_seed": 20260714,
+    "candidate_assessment_types": [
+      "error",
+      "warning",
+      "interpretation"
+    ],
+    "pass_control_assessment_type": "pass",
+    "include_all_assessment_types": [
+      "error"
+    ],
+    "stratification_fields": [
+      "assessment_type",
+      "check",
+      "primary_assay_family",
+      "ontology_terms",
+      "metric_value_stratum",
+      "lab"
+    ],
+    "control_matching_field": "assay_family"
+  },
+  "high_confidence": {
+    "source": "frozen_controlled_perturbation_policy_assessment_codes",
+    "eligible_assessment_types": [
+      "error",
+      "warning"
+    ],
+    "include_all_high_confidence": true
+  },
+  "review": {
+    "reviewers": 2,
+    "blind_source_kind": true,
+    "blind_original_assessment": true,
+    "blind_high_confidence": true,
+    "package_seeds": {
+      "reviewer_1": 20260715,
+      "reviewer_2": 20260716
+    },
+    "classifications": [
+      "confirmed_specification_problem",
+      "confirmed_read_or_resource_problem",
+      "intended_assay_design",
+      "seqcheck_problem",
+      "inconclusive"
+    ],
+    "confidence_values": [
+      "high",
+      "medium",
+      "low"
+    ],
+    "adjudication_required_for": "classification_disagreement"
+  },
+  "analysis": {
+    "confirmed_classifications": [
+      "confirmed_specification_problem",
+      "confirmed_read_or_resource_problem"
+    ],
+    "inconclusive_classification": "inconclusive",
+    "pass_consistent_classifications": [
+      "intended_assay_design"
+    ],
+    "agreement_endpoint": "unweighted_cohen_kappa",
+    "confidence_interval": "wilson",
+    "confidence_level": 0.95
+  },
+  "scientific_targets": {
+    "minimum_high_confidence_confirmation_precision": 0.7,
+    "minimum_cohen_kappa": 0.7,
+    "minimum_pass_control_consistency": 0.9,
+    "minimum_presentable_confirmed_cases": 3,
+    "minimum_downstream_cases_with_expected_change": 2
+  }
+}

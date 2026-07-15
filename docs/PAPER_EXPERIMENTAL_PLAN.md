@@ -756,6 +756,19 @@ policy before drawing the review sample. Report conservative confirmation
 precision with inconclusive cases counted as unconfirmed and evaluable precision
 with inconclusive cases shown separately.
 
+Operationally, a warning or error is high-confidence only when its assessment
+code appears in a ready entry of the frozen controlled perturbation policy. The
+absolute metric-effect thresholds in that policy are not reused for the audit,
+because they describe paired perturbation effects rather than absolute values in
+unpaired consortium data. Include every error and every policy-supported
+high-confidence finding. Fill the remaining candidate sample by deterministic
+round-robin selection across assessment type, check, assay family, ontology
+terms, observed-value magnitude stratum, and submitting lab. Magnitude strata
+balance the review sample but do not compare values with different units or
+metric meanings. Select pass controls in proportion to the selected candidate
+assay families, without replacement, and fail selection when an exact family
+match is unavailable.
+
 Review packets will hide the original pass, warning, error, or interpretation
 label and the high-confidence classification. Reviewers will receive the relevant
 spec context, observed metric, and linked assay information needed to assess the
@@ -784,6 +797,11 @@ before running each corrected analysis.
 Complete-file processing is allowed only for these selected downstream cases.
 The primary adjudication result is confirmation precision by assessment class.
 Inconclusive cases remain in the denominator but are reported separately.
+Compute unweighted Cohen's kappa over the five blinded reviewer classes. A
+classification disagreement requires a third adjudicator. Agreements cannot be
+overridden during adjudication. Record an explicit submitter-contact status for
+every case, including `not_attempted`, so missing responses are not confused
+with negative responses.
 
 ## Data and Output Contract
 
