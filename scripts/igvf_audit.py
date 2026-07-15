@@ -29,7 +29,7 @@ from typing import Any
 USER_AGENT = "seqcheck-igvf-audit/0.1"
 DEFAULT_API_ROOT = "https://api.data.igvf.org/"
 DEFAULT_PORTAL_ROOT = DEFAULT_API_ROOT
-AUDIT_SCHEMA_VERSION = "0.2.0"
+AUDIT_SCHEMA_VERSION = "0.3.0"
 CURRENT_SEQSPEC_VERSION = "0.5.0"
 SAMPLING_METHOD = "prefix"
 ONTOLOGY_TERM_PATTERN = re.compile(r"RGN:[A-Za-z0-9_]+:[A-Za-z0-9_]+")
@@ -79,6 +79,7 @@ class RunRecord:
     normalized_seqspec_version: str
     requested_reads: int
     requested_reads_total: int
+    sampled_record_count: int
     expected_fastq_count: int
     supplied_fastq_count: int
     controlled_access: bool
@@ -114,6 +115,8 @@ class DiagnosticRecord:
     reads: str
     regions: str
     ontology_terms: str
+    sequence_types: str
+    region_annotations_json: str
 
 
 @dataclass(frozen=True)
@@ -138,6 +141,8 @@ class MetricRecord:
     reads: str
     regions: str
     ontology_terms: str
+    sequence_types: str
+    region_annotations_json: str
     metric_side: str
     metric_id: str
     metric_name: str
@@ -589,6 +594,35 @@ def process_configuration(
         report_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
+            region_annotations = list_modality_region_annotations(
+                seqspec_cmd,
+                spec_url,
+                modality,
+                seqspec_auth_profile,
+                mpl_dir,
+            )
+        except (subprocess.CalledProcessError, ValueError) as err:
+            message = stderr_message(err) if isinstance(
+                err, subprocess.CalledProcessError
+            ) else str(err)
+            failures.append(
+                build_failure(
+                    audit_context.run_id,
+                    record,
+                    modality=modality,
+                    raw_seqspec_version=raw_seqspec_version,
+                    normalized_seqspec_version=normalized_seqspec_version,
+                    stage="enumerate_regions",
+                    reason=classify_seqspec_failure_reason(
+                        default_reason="seqspec_region_error",
+                        message=message,
+                    ),
+                    message=message,
+                )
+            )
+            continue
+
+        try:
             expected_files = list_modality_files(
                 seqspec_cmd,
                 spec_url,
@@ -691,6 +725,7 @@ def process_configuration(
             expected_files,
             modality_sequence_records,
             fastq_urls,
+            region_annotations,
             args.n_reads,
             controlled_needed,
         )
@@ -728,6 +763,7 @@ def process_configuration(
                     supplied_fastq_count=len(modality_sequence_records),
                     controlled_access=controlled_needed,
                     run_status="cached",
+                    region_annotations=region_annotations,
                 )
                 runs.append(run_row)
                 diagnostics.extend(diagnostic_rows)
@@ -801,6 +837,7 @@ def process_configuration(
             supplied_fastq_count=len(modality_sequence_records),
             controlled_access=controlled_needed,
             run_status="completed",
+            region_annotations=region_annotations,
         )
         runs.append(run_row)
         diagnostics.extend(diagnostic_rows)
@@ -1050,6 +1087,7 @@ def build_report_cache_key(
     expected_files: list[dict[str, Any]],
     sequence_records: list[SequenceFileRecord],
     fastq_urls: list[str],
+    region_annotations: dict[str, dict[str, Any]],
     n_reads: int,
     controlled_access: bool,
 ) -> str:
@@ -1065,6 +1103,7 @@ def build_report_cache_key(
         "expected_files": expected_files,
         "sequence_records": [asdict(item) for item in sequence_records],
         "fastq_urls": fastq_urls,
+        "region_annotations": region_annotations,
         "n_reads": n_reads,
         "controlled_access": controlled_access,
         "tools": {
@@ -1316,6 +1355,73 @@ def list_modalities(
     return [str(item) for item in payload]
 
 
+def list_modality_region_annotations(
+    command: ToolCommand,
+    spec_source: str,
+    modality: str,
+    auth_profile: str | None,
+    mpl_dir: Path,
+) -> dict[str, dict[str, Any]]:
+    env = os.environ.copy()
+    env.update(command.env)
+    env["MPLCONFIGDIR"] = str(mpl_dir)
+    argv = command.argv + [
+        "info",
+        "-k",
+        "library_spec",
+        "-f",
+        "json",
+        spec_source,
+    ]
+    if auth_profile:
+        argv.extend(["--auth-profile", auth_profile])
+    result = subprocess.run(
+        argv,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    payload = json.loads(result.stdout)
+    if not isinstance(payload, dict) or not isinstance(payload.get(modality), list):
+        raise ValueError(f"seqspec has no region list for modality: {modality}")
+    return index_region_annotations(payload[modality])
+
+
+def index_region_annotations(
+    regions: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    indexed = {}
+    for region in regions:
+        if not isinstance(region, dict):
+            raise ValueError("seqspec modality contains a non-object region")
+        region_id = str(region.get("region_id", "")).strip()
+        sequence_type = str(region.get("sequence_type", "")).strip()
+        if not region_id or not sequence_type:
+            raise ValueError("seqspec region annotation is incomplete")
+        if region_id in indexed:
+            raise ValueError(f"seqspec region_id is not unique in modality: {region_id}")
+        region_type = region.get("region_type")
+        terms = [region_type] if isinstance(region_type, str) else region_type
+        if (
+            not isinstance(terms, list)
+            or not terms
+            or any(
+                not isinstance(value, str) or not value.startswith("RGN:")
+                for value in terms
+            )
+        ):
+            raise ValueError(f"seqspec region_type is invalid for region: {region_id}")
+        if len(terms) != len(set(terms)):
+            raise ValueError(f"seqspec region_type contains duplicates: {region_id}")
+        indexed[region_id] = {
+            "region_id": region_id,
+            "sequence_type": sequence_type,
+            "ontology_terms": sorted(terms),
+        }
+    return indexed
+
+
 def resolve_expected_sequence_file(
     file_record: dict[str, Any], sequence_files: dict[str, SequenceFileRecord]
 ) -> SequenceFileRecord | None:
@@ -1445,6 +1551,7 @@ def flatten_report(
     supplied_fastq_count: int,
     controlled_access: bool,
     run_status: str,
+    region_annotations: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[RunRecord, list[DiagnosticRecord], list[MetricRecord]]:
     if expected_fastq_count <= 0:
         expected_fastq_count = infer_expected_fastq_count(report)
@@ -1465,6 +1572,7 @@ def flatten_report(
     cache_key = str(audit_summary.get("cache_key", ""))
     sampling_method = str(audit_summary.get("sampling_method", SAMPLING_METHOD))
     sampling_seed = audit_summary.get("sampling_seed")
+    sampled_record_count = infer_sampled_record_count(report)
 
     run = RunRecord(
         study_run_id=study_run_id,
@@ -1487,6 +1595,7 @@ def flatten_report(
         requested_reads_total=(
             requested_reads * supplied_fastq_count if requested_reads > 0 else 0
         ),
+        sampled_record_count=sampled_record_count,
         expected_fastq_count=expected_fastq_count,
         supplied_fastq_count=supplied_fastq_count,
         controlled_access=controlled_access,
@@ -1502,6 +1611,11 @@ def flatten_report(
     metric_rows = []
     for result_index, result in enumerate(report.get("results", [])):
         ontology_terms = ";".join(extract_ontology_terms(result))
+        annotations = resolve_result_region_annotations(result, region_annotations)
+        sequence_types = ";".join(
+            sorted({value["sequence_type"] for value in annotations})
+        )
+        region_annotations_json = canonical_json(annotations)
         for assessment in result.get("assessment", []):
             diagnostics.append(
                 DiagnosticRecord(
@@ -1527,6 +1641,8 @@ def flatten_report(
                     reads=";".join(str(value) for value in result.get("reads", [])),
                     regions=";".join(str(value) for value in result.get("regions", [])),
                     ontology_terms=ontology_terms,
+                    sequence_types=sequence_types,
+                    region_annotations_json=region_annotations_json,
                 )
             )
 
@@ -1555,6 +1671,8 @@ def flatten_report(
                         reads=";".join(str(value) for value in result.get("reads", [])),
                         regions=";".join(str(value) for value in result.get("regions", [])),
                         ontology_terms=ontology_terms,
+                        sequence_types=sequence_types,
+                        region_annotations_json=region_annotations_json,
                         metric_side=metric_side,
                         metric_id=str(metric.get("id", "")),
                         metric_name=str(metric.get("name", "")),
@@ -1582,6 +1700,48 @@ def extract_ontology_terms(value: Any) -> list[str]:
 
     visit(value.get("expected", []) if isinstance(value, dict) else value)
     return sorted(terms)
+
+
+def resolve_result_region_annotations(
+    result: dict[str, Any],
+    region_annotations: dict[str, dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if region_annotations is None:
+        return []
+    region_ids = result.get("regions", [])
+    if not isinstance(region_ids, list):
+        raise ValueError("seqcheck result regions is not a list")
+    resolved = []
+    for value in region_ids:
+        region_id = str(value).strip()
+        if not region_id or region_id not in region_annotations:
+            raise ValueError(f"seqcheck result references unknown region: {region_id}")
+        resolved.append(region_annotations[region_id])
+    return resolved
+
+
+def infer_sampled_record_count(report: dict[str, Any]) -> int:
+    sampled_by_file: dict[str, set[int]] = {}
+    for result in report.get("results", []):
+        files = result.get("files", [])
+        if not isinstance(files, list) or len(files) != 1:
+            continue
+        for metric in result.get("observed", []):
+            if metric.get("name") != "sampled_count":
+                continue
+            data = metric.get("data", {})
+            value = data.get("value") if isinstance(data, dict) else None
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("seqcheck sampled_count is not a nonnegative integer")
+            sampled_by_file.setdefault(str(files[0]), set()).add(value)
+    inconsistent = {
+        file_id: sorted(values)
+        for file_id, values in sampled_by_file.items()
+        if len(values) != 1
+    }
+    if inconsistent:
+        raise ValueError(f"seqcheck sampled_count differs within files: {inconsistent}")
+    return sum(next(iter(values)) for values in sampled_by_file.values())
 
 
 def infer_expected_fastq_count(report: dict[str, Any]) -> int:
@@ -1616,6 +1776,7 @@ def annotate_report_summary(
     cache_key: str,
 ) -> dict[str, Any]:
     requested_reads = int(report.get("meta", {}).get("requested_reads", 0))
+    sampled_record_count = infer_sampled_record_count(report)
     report["audit_summary"] = {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "study_run_id": audit_context.run_id,
@@ -1636,6 +1797,7 @@ def annotate_report_summary(
         "requested_reads_total": (
             requested_reads * supplied_fastq_count if requested_reads > 0 else 0
         ),
+        "sampled_record_count": sampled_record_count,
         "controlled_access": controlled_access,
     }
     return report
@@ -1729,6 +1891,7 @@ def reconcile_outputs(
 
     report_parse_errors = []
     report_identity_errors = []
+    report_sample_count_errors = []
     expected_assessments_by_report: Counter[str] = Counter()
     expected_metrics_by_report: Counter[str] = Counter()
     for run in runs:
@@ -1746,6 +1909,27 @@ def reconcile_outputs(
             or not report_cache_matches(report, run.cache_key)
         ):
             report_identity_errors.append(str(path))
+
+        try:
+            observed_sample_count = infer_sampled_record_count(report)
+        except ValueError as err:
+            report_sample_count_errors.append(
+                {"report_path": str(path), "error": str(err)}
+            )
+        else:
+            summary_sample_count = summary.get("sampled_record_count")
+            if (
+                observed_sample_count != run.sampled_record_count
+                or summary_sample_count != run.sampled_record_count
+            ):
+                report_sample_count_errors.append(
+                    {
+                        "report_path": str(path),
+                        "report_count": observed_sample_count,
+                        "summary_count": summary_sample_count,
+                        "run_count": run.sampled_record_count,
+                    }
+                )
 
         for result in report.get("results", []):
             report_key = str(path)
@@ -1782,6 +1966,12 @@ def reconcile_outputs(
         "no_orphan_reports": not (actual_reports - catalog_reports),
         "reports_parse": not report_parse_errors,
         "report_identities_match": not report_identity_errors,
+        "sampled_record_counts_match": not report_sample_count_errors,
+        "completed_versions_recorded": all(
+            row.raw_seqspec_version
+            and row.normalized_seqspec_version == CURRENT_SEQSPEC_VERSION
+            for row in runs
+        ),
         "assessment_rows_reconcile": (
             expected_assessments_by_report == actual_assessments_by_report
         ),
@@ -1807,6 +1997,7 @@ def reconcile_outputs(
             "expected_assessments": expected_assessment_count,
             "metrics": len(metrics),
             "expected_metrics": expected_metric_count,
+            "sampled_records": sum(row.sampled_record_count for row in runs),
             "catalog_reports": len(catalog_reports),
             "actual_reports": len(actual_reports),
         },
@@ -1819,6 +2010,7 @@ def reconcile_outputs(
             "orphan_reports": sorted(str(path) for path in actual_reports - catalog_reports),
             "report_parse_errors": report_parse_errors,
             "report_identity_errors": report_identity_errors,
+            "report_sample_count_errors": report_sample_count_errors,
             "flattened_identity_errors": flattened_identity_errors,
             "assessment_count_mismatches": counter_differences(
                 expected_assessments_by_report, actual_assessments_by_report

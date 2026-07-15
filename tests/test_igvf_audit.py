@@ -1,4 +1,5 @@
 import argparse
+import dataclasses
 import importlib.util
 import json
 import os
@@ -194,8 +195,8 @@ class IgvfAuditTests(unittest.TestCase):
                     "observed": [
                         {
                             "id": "o1",
-                            "name": "matched_count",
-                            "description": "Matched input count.",
+                            "name": "sampled_count",
+                            "description": "Sampled input count.",
                             "data": {"kind": "scalar", "value": 1, "unit": "count"},
                         }
                     ],
@@ -213,6 +214,24 @@ class IgvfAuditTests(unittest.TestCase):
                         {"type": "interpretation", "code": "note", "description": "info"},
                     ],
                 },
+                {
+                    "check": "onlist",
+                    "files": ["IGVFFI0001TEST"],
+                    "reads": ["Read1"],
+                    "regions": ["barcode"],
+                    "observed": [
+                        {
+                            "id": "o1",
+                            "name": "exact_onlist_fraction",
+                            "description": "Exact on-list fraction.",
+                            "data": {
+                                "kind": "scalar",
+                                "value": 0.9,
+                                "unit": "fraction",
+                            },
+                        }
+                    ],
+                },
             ],
         }
 
@@ -228,6 +247,16 @@ class IgvfAuditTests(unittest.TestCase):
             supplied_fastq_count=1,
             controlled_access=False,
             run_status="completed",
+            region_annotations={
+                "barcode": {
+                    "region_id": "barcode",
+                    "sequence_type": "onlist",
+                    "ontology_terms": [
+                        "RGN:classify:cell_identity",
+                        "RGN:partition:cell",
+                    ],
+                }
+            },
         )
 
         self.assertEqual(run.modality_count, 2)
@@ -237,12 +266,18 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertEqual(run.interpretation_count, 1)
         self.assertEqual(run.requested_reads_total, 10000)
         self.assertEqual(run.supplied_fastq_count, 1)
+        self.assertEqual(run.sampled_record_count, 1)
         self.assertEqual(run.study_run_id, "study-1")
         self.assertEqual(len(diagnostics), 3)
         self.assertEqual(diagnostics[1].assessment_code, "length_out_of_range")
-        self.assertEqual(len(metrics), 2)
+        self.assertEqual(len(metrics), 3)
         self.assertEqual(metrics[0].metric_side, "expected")
         self.assertEqual(metrics[0].data_kind, "records")
+        self.assertEqual(metrics[2].sequence_types, "onlist")
+        self.assertEqual(
+            json.loads(metrics[2].region_annotations_json)[0]["region_id"],
+            "barcode",
+        )
         self.assertEqual(
             metrics[0].ontology_terms,
             "RGN:classify:cell_identity;RGN:partition:cell",
@@ -268,7 +303,7 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertEqual(
             annotated["audit_summary"],
             {
-                "audit_schema_version": "0.2.0",
+                "audit_schema_version": "0.3.0",
                 "study_run_id": "study-1",
                 "cache_key": "cache-1",
                 "sampling_method": "prefix",
@@ -299,6 +334,7 @@ class IgvfAuditTests(unittest.TestCase):
                 "supplied_fastq_count": 2,
                 "requested_reads_per_fastq": 10000,
                 "requested_reads_total": 20000,
+                "sampled_record_count": 0,
                 "controlled_access": True,
             },
         )
@@ -313,7 +349,11 @@ class IgvfAuditTests(unittest.TestCase):
         )
         expected_files = [{"file_id": sequence.accession, "read_id": "Read1"}]
 
-        def key(context: object, n_reads: int) -> str:
+        def key(
+            context: object,
+            n_reads: int,
+            region_annotations: dict[str, object] | None = None,
+        ) -> str:
             return MODULE.build_report_cache_key(
                 context,
                 record,
@@ -324,6 +364,7 @@ class IgvfAuditTests(unittest.TestCase):
                 expected_files,
                 [sequence],
                 ["https://example.org/test.fastq.gz"],
+                region_annotations or {},
                 n_reads,
                 False,
             )
@@ -331,6 +372,20 @@ class IgvfAuditTests(unittest.TestCase):
         context = self.audit_context()
         self.assertEqual(key(context, 10000), key(context, 10000))
         self.assertNotEqual(key(context, 10000), key(context, 100000))
+        self.assertNotEqual(
+            key(context, 10000),
+            key(
+                context,
+                10000,
+                {
+                    "barcode": {
+                        "region_id": "barcode",
+                        "sequence_type": "onlist",
+                        "ontology_terms": ["RGN:partition:cell"],
+                    }
+                },
+            ),
+        )
 
         changed_tool = MODULE.AuditContext(
             run_id=context.run_id,
@@ -387,6 +442,63 @@ class IgvfAuditTests(unittest.TestCase):
             self.assertNotEqual(
                 first, MODULE.path_tree_sha256(root, ["Cargo.toml", "src"])
             )
+
+    def test_region_annotations_require_unique_typed_ontology_regions(self) -> None:
+        indexed = MODULE.index_region_annotations(
+            [
+                {
+                    "region_id": "barcode",
+                    "sequence_type": "onlist",
+                    "region_type": ["RGN:partition:cell"],
+                }
+            ]
+        )
+
+        self.assertEqual(indexed["barcode"]["sequence_type"], "onlist")
+        with self.assertRaisesRegex(ValueError, "not unique"):
+            MODULE.index_region_annotations(
+                [
+                    {
+                        "region_id": "barcode",
+                        "sequence_type": "onlist",
+                        "region_type": ["RGN:partition:cell"],
+                    },
+                    {
+                        "region_id": "barcode",
+                        "sequence_type": "random",
+                        "region_type": ["RGN:partition:molecule"],
+                    },
+                ]
+            )
+
+    def test_sampled_record_count_deduplicates_metrics_within_each_file(self) -> None:
+        report = {
+            "results": [
+                {
+                    "files": ["R1"],
+                    "observed": [
+                        {"name": "sampled_count", "data": {"value": 10}}
+                    ],
+                },
+                {
+                    "files": ["R1"],
+                    "observed": [
+                        {"name": "sampled_count", "data": {"value": 10}}
+                    ],
+                },
+                {
+                    "files": ["R2"],
+                    "observed": [
+                        {"name": "sampled_count", "data": {"value": 8}}
+                    ],
+                },
+            ]
+        }
+
+        self.assertEqual(MODULE.infer_sampled_record_count(report), 18)
+        report["results"][1]["observed"][0]["data"]["value"] = 9
+        with self.assertRaisesRegex(ValueError, "differs within files"):
+            MODULE.infer_sampled_record_count(report)
 
     def test_external_tool_identity_hashes_executable_and_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -574,6 +686,32 @@ class IgvfAuditTests(unittest.TestCase):
             )
             self.assertFalse(missing_metric["checks"]["metric_rows_reconcile"])
 
+            wrong_sample_count = MODULE.reconcile_outputs(
+                output_root,
+                context,
+                [record],
+                [dataclasses.replace(run, sampled_record_count=9)],
+                diagnostics,
+                metrics,
+                [],
+            )
+            self.assertFalse(
+                wrong_sample_count["checks"]["sampled_record_counts_match"]
+            )
+
+            missing_version = MODULE.reconcile_outputs(
+                output_root,
+                context,
+                [record],
+                [dataclasses.replace(run, raw_seqspec_version="")],
+                diagnostics,
+                metrics,
+                [],
+            )
+            self.assertFalse(
+                missing_version["checks"]["completed_versions_recorded"]
+            )
+
             orphan = output_root / "reports" / "orphan.json"
             orphan.write_text("{}", encoding="utf-8")
             with_orphan = MODULE.reconcile_outputs(
@@ -619,6 +757,7 @@ class IgvfAuditTests(unittest.TestCase):
                 normalized_seqspec_version="0.5.0",
                 requested_reads=10000,
                 requested_reads_total=10000,
+                sampled_record_count=10000,
                 expected_fastq_count=1,
                 supplied_fastq_count=1,
                 controlled_access=False,
