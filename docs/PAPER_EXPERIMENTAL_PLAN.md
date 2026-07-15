@@ -215,7 +215,7 @@ These tasks must be complete before generating paper results.
 | Record run provenance | Study manifests record exact input, tool, script, invocation, runtime, sampling, and report identities | Each run records tool commits, command, sampling method, seed, UTC time, and report schema |
 | Export raw metrics | The audit and Phase 0 runners flatten every expected and observed metric with scope and ontology terms | One row per expected or observed metric is written with result scope and ontology terms |
 | Prevent stale cache reuse | Cache identities include executable or script hashes, input identity, sampling policy, and report schema | Cache keys include tool versions, input identity, sampling settings, and report schema |
-| Add a study sampling harness | `sample_fastq.py` implements deterministic prefix, reservoir, and synchronized-mate sampling with manifests | A tested script writes seeded reservoir samples, preserves full FASTQ records, synchronizes mates when requested, and records a manifest |
+| Add a study sampling harness | `sample_fastq.py` handles individual probes; `sample_fastq_matrix.py` creates every planned prefix and reservoir condition in one complete traversal with synchronized-mate support and a shared manifest | Tested scripts write seeded reservoir samples, preserve full FASTQ records, synchronize mates when requested, and record stable content identities |
 | Freeze external tools | Audit and Phase 0 manifests capture the FastQC executable, version, hash, and limits configuration | FastQC version and configuration are captured in the study manifest |
 | Create a clean output contract | New run roots contain immutable inputs, reports, tables, manifests, and fail-closed reconciliation records | Every table reconciles to a manifest entry and is generated in a new run directory |
 
@@ -277,8 +277,14 @@ feasible without retaining full files.
 For each selected FASTQ, run seqcheck at 1,000, 10,000, and 100,000 reads using:
 
 - Prefix sampling
-- Three seeded reservoir samples produced during one complete input stream
+- Three reservoir samples with fixed seeds 17, 29, and 43, produced with all
+  prefix samples during one complete input stream
 - The complete stream as the reference
+
+The machine-readable condition definition is
+`experiments/paper/protocol/sampling_calibration.json`. It defines 12 bounded
+sample conditions and one complete-stream reference per FASTQ. The sample
+matrix manifest must contain all 12 bounded conditions before seqcheck runs.
 
 Run each local performance condition three times after one warm-up run. Measure
 wall time, peak resident memory, records processed, compressed bytes read when

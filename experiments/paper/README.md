@@ -28,3 +28,27 @@ The command refuses to overwrite a prior run. It must report `valid: true` in
 and pinned 0.5 HTTPS inputs. Raw and normalized results must match after replacing
 only the materialized paths of declared specs and resources; metric values and
 assessments are never excluded from the parity check.
+
+The Experiment 1 condition matrix is fixed in
+`protocol/sampling_calibration.json`. After the reviewed cohort is frozen, create
+all prefix and reservoir samples for one FASTQ in one complete source traversal:
+
+```bash
+python3 scripts/sample_fastq_matrix.py \
+  --input reads.fastq.gz \
+  --output-root experiments/paper/runs/<run-id>/samples/<fastq-id> \
+  --n-reads 1000 \
+  --n-reads 10000 \
+  --n-reads 100000 \
+  --seed 17 \
+  --seed 29 \
+  --seed 43 \
+  --include-prefix
+```
+
+Repeat `--input` and add `--synchronize-mates` only when the read files form a
+paired set that must retain matching names. The sampler consumes every source
+to compute its content hash, writes deterministic gzip files, records all 12
+sample conditions per FASTQ, and refuses to overwrite an existing output root.
+The complete-stream seqcheck report is the thirteenth condition and runs from
+the source rather than a retained copy.

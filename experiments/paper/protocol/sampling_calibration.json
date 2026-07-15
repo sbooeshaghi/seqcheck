@@ -1,0 +1,42 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "sampling-calibration",
+  "cohort_limits": {
+    "configurations": 12,
+    "fastqs": 24
+  },
+  "sampling": {
+    "records_per_fastq": [
+      1000,
+      10000,
+      100000
+    ],
+    "include_prefix": true,
+    "reservoir_seeds": [
+      17,
+      29,
+      43
+    ],
+    "source_traversals_for_bounded_samples_per_fastq": 1,
+    "synchronize_mates_when_paired": true,
+    "complete_stream_reference": true
+  },
+  "performance": {
+    "warmup_runs": 1,
+    "measured_runs": 3,
+    "measure_local_computation_separately_from_remote_transfer": true,
+    "metrics": [
+      "wall_time_seconds",
+      "peak_resident_memory_bytes",
+      "records_processed",
+      "compressed_bytes_read",
+      "report_size_bytes"
+    ]
+  },
+  "expected_conditions_per_fastq": {
+    "prefix": 3,
+    "reservoir": 9,
+    "complete_stream": 1,
+    "total": 13
+  }
+}
