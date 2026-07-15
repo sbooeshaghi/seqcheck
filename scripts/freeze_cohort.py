@@ -538,10 +538,10 @@ def write_json(path: Path, value: Any) -> None:
 
 def is_iso_date(value: str) -> bool:
     try:
-        date.fromisoformat(value)
+        parsed = date.fromisoformat(value)
     except ValueError:
         return False
-    return True
+    return parsed.isoformat() == value
 
 
 def canonical_json(value: Any) -> str:

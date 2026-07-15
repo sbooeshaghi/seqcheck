@@ -20,11 +20,28 @@ Reviewers compare four records:
 ## Independent Decisions
 
 Two reviewers inspect each row independently. The coordinator gives each
-reviewer a copy of `cohort_reviews.template.csv` with the other reviewer's
-columns blank. Reviewers must not see the other decision before both copies are
-locked.
+reviewer a separate package made by `scripts/manage_cohort_reviews.py`.
+Reviewers must not see the other package or decision before both returned sheets
+are locked.
+
+Prepare both packages from the authoritative candidate manifest and table:
+
+```bash
+uv run python scripts/manage_cohort_reviews.py prepare \
+  --candidate-manifest experiments/paper/runs/<run>/manifests/cohort_candidates.json \
+  --output-root experiments/paper/runs/<run>/review/packages
+```
+
+Give `review/packages/reviewer_1/` to reviewer 1 and
+`review/packages/reviewer_2/` to reviewer 2. Each directory contains a review
+sheet and a package manifest. The two packages have different content-addressed
+package identifiers but the same candidate evidence.
 
 Each reviewer records their name, decision, rationale, protocol URL, and date.
+These five generic columns are the only editable fields in a reviewer sheet.
+The reviewer must use the same identity on every row and must not edit the
+package identifier, slot, or copied candidate evidence. The merge command
+requires a complete decision for every candidate; it rejects partial sheets.
 Allowed decisions are:
 
 - `include`: the protocol, modality, read structure, and exact FASTQ set support
@@ -32,11 +49,31 @@ Allowed decisions are:
 - `exclude`: the row is not an unmodified baseline for the proposed family.
 - `inconclusive`: the available protocol or metadata cannot resolve the row.
 
-The coordinator merges the two locked copies without changing candidate fields.
-If the decisions disagree, or either decision is `inconclusive`, an adjudicator
-records `include` or `exclude` plus a rationale. An included row sets
-`final_family` to its proposed `family_id`. An excluded row leaves
-`final_family` blank. Reviewers and adjudicators leave `split` blank.
+Merge the two locked sheets with their original package manifests:
+
+```bash
+uv run python scripts/manage_cohort_reviews.py merge \
+  --candidate-manifest experiments/paper/runs/<run>/manifests/cohort_candidates.json \
+  --reviewer-1-package experiments/paper/runs/<run>/review/packages/reviewer_1/review_package.json \
+  --reviewer-1-sheet experiments/paper/runs/<run>/review/packages/reviewer_1/cohort_review.csv \
+  --reviewer-2-package experiments/paper/runs/<run>/review/packages/reviewer_2/review_package.json \
+  --reviewer-2-sheet experiments/paper/runs/<run>/review/packages/reviewer_2/cohort_review.csv \
+  --output-root experiments/paper/runs/<run>/review/merged
+```
+
+The merge command verifies the exact candidate keys and every copied evidence
+value, checks that the reviewers are distinct, and reconstructs candidate fields
+from the authoritative candidate table rather than either reviewer sheet. It
+writes the combined review table plus a manifest that hashes both locked inputs.
+It never overwrites an existing package or merged review.
+
+Preserve the merged output unchanged. Create the adjudication table from that
+output and edit only `adjudication_decision`, `adjudication_rationale`, and
+`final_family`. If the decisions disagree, or either decision is
+`inconclusive`, an adjudicator records `include` or `exclude` plus a rationale.
+An included row sets `final_family` to its proposed `family_id`. An excluded row
+leaves `final_family` blank. Reviewers and adjudicators leave `split` blank. The
+freeze command independently rejects any changed stable candidate evidence.
 
 ## Freeze Gate
 
@@ -58,7 +95,7 @@ family by a seeded hash only after all checks pass. It writes 12 calibration and
 ```bash
 uv run python scripts/freeze_cohort.py \
   --candidate-manifest experiments/paper/runs/<run>/manifests/cohort_candidates.json \
-  --reviews experiments/paper/runs/<run>/tables/cohort_reviews.csv \
+  --reviews experiments/paper/runs/<run>/review/adjudication/cohort_reviews.csv \
   --family-rules docs/cohort_family_rules.json \
   --output-root experiments/paper/runs/<run>/freeze
 ```

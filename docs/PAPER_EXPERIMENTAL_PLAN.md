@@ -135,15 +135,19 @@ FASTQs with portal-linked FASTQs. Resource validation runs only after a spec
 passes the internal checks, so an unavailable endpoint cannot hide a stable
 structural failure. Volatile resource outcomes and retry counts are recorded but
 do not change the candidate selection identifier. The builder writes a blank
-two-reviewer sheet and marks the cohort as unfrozen. A rerun never overwrites an
-existing review sheet and reports when that sheet belongs to a different
-selection identifier.
+combined-review template and marks the cohort as unfrozen. A rerun never
+overwrites an existing review sheet and reports when that sheet belongs to a
+different selection identifier.
 
-Reviewers follow `docs/COHORT_REVIEW_PROTOCOL.md`. After both independent
-reviews and any adjudication are locked, `scripts/freeze_cohort.py` reconciles
-the review table to the candidate manifest and assigns the seeded 12/18 split.
-The command writes no frozen cohort when any review, baseline check, family
-quota, or deduplication rule fails.
+Reviewers follow `docs/COHORT_REVIEW_PROTOCOL.md`.
+`scripts/manage_cohort_reviews.py` creates two independent, content-addressed
+review packages and merges only complete sheets from distinct reviewers. The
+merge verifies copied evidence against the candidate table and reconstructs the
+combined table from the authoritative candidate rows. After both reviews and
+any adjudication are locked, `scripts/freeze_cohort.py` reconciles the final
+review table to the candidate manifest and assigns the seeded 12/18 split. The
+command writes no frozen cohort when any review, baseline check, family quota,
+or deduplication rule fails.
 
 Two configurations from each family will form a 12-configuration calibration
 set. The remaining 18 configurations will be locked before thresholds are chosen

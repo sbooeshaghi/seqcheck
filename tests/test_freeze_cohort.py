@@ -121,6 +121,14 @@ class FreezeCohortTests(unittest.TestCase):
             ("include", []),
         )
 
+    def test_review_dates_require_extended_iso_format(self) -> None:
+        reviewed = review(candidate("C1"))
+        reviewed["reviewer_1_date"] = "20260714"
+
+        _, errors = MODULE.effective_review_decision(reviewed)
+
+        self.assertIn("reviewer_1_date must use YYYY-MM-DD", errors)
+
     def test_volatile_retry_fields_do_not_stale_a_review(self) -> None:
         original = candidate("C1") | {
             "download_attempts": "1",
