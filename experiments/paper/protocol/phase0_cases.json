@@ -1,0 +1,46 @@
+{
+  "schema_version": "0.1.0",
+  "cases": [
+    {
+      "case_id": "legacy-03-local",
+      "spec": "../../../tests/fixtures/phase0/spec_0_3.yaml",
+      "modality": "rna",
+      "fastqs": [
+        "../../../tests/fixtures/phase0/fastqs/phase0_R1.fastq"
+      ],
+      "n_reads": 0,
+      "resources": []
+    },
+    {
+      "case_id": "current-05-remote",
+      "spec": "https://raw.githubusercontent.com/sbooeshaghi/seqcheck/1e93b084b421ae75aa68b28a90bc0e59f9f8921b/tests/fixtures/synthetic/spec_0_5.yaml",
+      "modality": "rna",
+      "fastqs": [
+        "https://raw.githubusercontent.com/sbooeshaghi/seqcheck/1e93b084b421ae75aa68b28a90bc0e59f9f8921b/tests/fixtures/synthetic/fastqs/synthetic_R1.fastq"
+      ],
+      "n_reads": 0,
+      "resources": [
+        {
+          "source": "https://raw.githubusercontent.com/sbooeshaghi/seqcheck/1e93b084b421ae75aa68b28a90bc0e59f9f8921b/tests/fixtures/synthetic/onlists/synthetic_barcodes.txt",
+          "path": "onlists/synthetic_barcodes.txt"
+        }
+      ]
+    }
+  ],
+  "sampling_probe": {
+    "inputs": [
+      "../../../tests/fixtures/phase0/fastqs/phase0_R1.fastq"
+    ],
+    "n_reads": 6,
+    "seed": 17,
+    "synchronize_mates": false,
+    "configuration_accession": "phase0-legacy",
+    "modality": "rna",
+    "fastq_accessions": [
+      "phase0_R1"
+    ],
+    "read_ids": [
+      "phase0_R1"
+    ]
+  }
+}

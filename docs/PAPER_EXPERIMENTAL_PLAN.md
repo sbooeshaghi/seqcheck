@@ -209,15 +209,15 @@ select the same names from every mate.
 
 These tasks must be complete before generating paper results.
 
-| Task | Current state | Completion criterion |
+| Task | Implemented evidence | Completion criterion |
 | --- | --- | --- |
-| Normalize audit specs to seqspec 0.5.0 | The audit runner still records 0.4.0 | A test verifies old portal specs normalize to 0.5.0 |
-| Record run provenance | Reports record command inputs but not a complete study manifest | Each run records tool commits, command, sampling method, seed, UTC time, and report schema |
-| Export raw metrics | The audit catalog primarily flattens assessments | One row per expected or observed metric is written with result scope and ontology terms |
-| Prevent stale cache reuse | Existing reports can be reused based only on successful parsing | Cache keys include tool versions, input identity, sampling settings, and report schema |
-| Add a study sampling harness | Seqcheck supports bounded prefix sampling but the study also needs unbiased samples | A tested script writes seeded reservoir samples, preserves full FASTQ records, synchronizes mates when requested, and records a manifest |
-| Freeze external tools | FastQC is not part of the runner | FastQC version and configuration are captured in the study manifest |
-| Create a clean output contract | The prior audit directory contains stale reports | Every table reconciles to a manifest entry and is generated in a new run directory |
+| Normalize audit specs to seqspec 0.5.0 | `igvf_audit.py` and `run_phase0.py` record raw and normalized versions; the acceptance gate upgrades a true 0.3 fixture | A test verifies old portal specs normalize to 0.5.0 |
+| Record run provenance | Study manifests record exact input, tool, script, invocation, runtime, sampling, and report identities | Each run records tool commits, command, sampling method, seed, UTC time, and report schema |
+| Export raw metrics | The audit and Phase 0 runners flatten every expected and observed metric with scope and ontology terms | One row per expected or observed metric is written with result scope and ontology terms |
+| Prevent stale cache reuse | Cache identities include executable or script hashes, input identity, sampling policy, and report schema | Cache keys include tool versions, input identity, sampling settings, and report schema |
+| Add a study sampling harness | `sample_fastq.py` implements deterministic prefix, reservoir, and synchronized-mate sampling with manifests | A tested script writes seeded reservoir samples, preserves full FASTQ records, synchronizes mates when requested, and records a manifest |
+| Freeze external tools | Audit and Phase 0 manifests capture the FastQC executable, version, hash, and limits configuration | FastQC version and configuration are captured in the study manifest |
+| Create a clean output contract | New run roots contain immutable inputs, reports, tables, manifests, and fail-closed reconciliation records | Every table reconciles to a manifest entry and is generated in a new run directory |
 
 Required validation for this phase:
 
@@ -225,7 +225,16 @@ Required validation for this phase:
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 python3 -m unittest discover -s tests
+python3 scripts/run_phase0.py --case-manifest experiments/paper/protocol/phase0_cases.json ...
 ```
+
+The integrated runner materializes and hashes every spec, normalizes each case
+to 0.5.0, runs raw and normalized reports, exports every expected and observed
+metric, and checks all row denominators. It also repeats a seeded reservoir
+sample, changes the seed, and probes cache identities after changing the tool or
+sampling policy. The gate compares complete result objects. It canonicalizes
+only materialized paths for declared specs and resources so local path changes
+do not masquerade as measurement changes.
 
 ### Phase 0 Goal and Check
 

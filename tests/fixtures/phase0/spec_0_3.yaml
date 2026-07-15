@@ -1,0 +1,62 @@
+!Assay
+seqspec_version: 0.3.0
+assay_id: phase0-legacy
+name: Phase 0 Legacy Fixture
+doi: ""
+date: 14 July 2026
+description: Minimal legacy assay for the integrated reproducibility gate
+modalities:
+  - rna
+lib_struct: ""
+library_protocol: Phase0LibraryProtocol
+library_kit: Phase0LibraryKit
+sequence_protocol: Phase0Sequencer
+sequence_kit: Phase0SequenceKit
+sequence_spec:
+  - !Read
+    read_id: phase0_R1
+    name: Phase 0 Read 1
+    modality: rna
+    primer_id: primer
+    min_len: 10
+    max_len: 10
+    strand: pos
+    files:
+      - file_id: phase0_R1.fastq
+        filename: phase0_R1.fastq
+        filetype: fastq
+        filesize: 0
+        url: fastqs/phase0_R1.fastq
+        urltype: local
+        md5: 20138f88d0258fc5810b67ebaa843ae9
+library_spec:
+  - !Region
+    region_id: rna
+    region_type: rna
+    name: Phase 0 RNA
+    sequence_type: joined
+    sequence: ACGTACGTXXXXXXXXXX
+    min_len: 18
+    max_len: 18
+    onlist: null
+    regions:
+      - !Region
+        region_id: primer
+        region_type: truseq_read1
+        name: Read 1 Primer
+        sequence_type: fixed
+        sequence: ACGTACGT
+        min_len: 8
+        max_len: 8
+        onlist: null
+        regions: []
+      - !Region
+        region_id: umi
+        region_type: umi
+        name: Molecule Barcode
+        sequence_type: random
+        sequence: XXXXXXXXXX
+        min_len: 10
+        max_len: 10
+        onlist: null
+        regions: []
