@@ -30,8 +30,25 @@ only the materialized paths of declared specs and resources; metric values and
 assessments are never excluded from the parity check.
 
 The Experiment 1 condition matrix is fixed in
-`protocol/sampling_calibration.json`. After the reviewed cohort is frozen, create
-all prefix and reservoir samples for one FASTQ in one complete source traversal:
+`protocol/sampling_calibration.json`. After the reviewed cohort is frozen,
+select one or two nonredundant FASTQs from each calibration configuration:
+
+```bash
+python3 scripts/build_sampling_cases.py \
+  --cohort-manifest experiments/paper/runs/<cohort-run>/freeze/manifests/cohort_frozen.json \
+  --sampling-protocol experiments/paper/protocol/sampling_calibration.json \
+  --seqspec-bin ../seqspec/target/release/seqspec \
+  --output-root experiments/paper/runs/<run-id>/case-selection
+```
+
+The primary FASTQ has the largest indexed `RGN:measure:*` span. A secondary
+FASTQ is retained only when it adds a new measure, partition, or technical
+ontology term. The selector verifies the frozen cohort and spec hashes, records
+declared compressed sizes, and estimates the two source traversals needed for
+bounded sampling and the complete-stream reference.
+
+Create all prefix and reservoir samples for one selected FASTQ in one complete
+source traversal:
 
 ```bash
 python3 scripts/sample_fastq_matrix.py \

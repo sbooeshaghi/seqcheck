@@ -272,6 +272,13 @@ reads, and fixed technical regions. Cap the complete-stream cohort at 24 FASTQs.
 Select files with manageable public transfer sizes so complete streaming is
 feasible without retaining full files.
 
+The selection is deterministic. `build_sampling_cases.py` chooses the FASTQ
+with the largest indexed `RGN:measure:*` span, then retains one additional FASTQ
+only when it adds an ontology role or term. This favors a biological measurement
+read plus a complementary partition or technical read without paying to stream
+redundant files. The selection manifest records each declared compressed size
+and the minimum transfer for the bounded-sample and complete-reference streams.
+
 ### Procedure
 
 For each selected FASTQ, run seqcheck at 1,000, 10,000, and 100,000 reads using:

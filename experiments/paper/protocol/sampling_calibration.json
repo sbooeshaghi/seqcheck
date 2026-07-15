@@ -5,6 +5,12 @@
     "configurations": 12,
     "fastqs": 24
   },
+  "case_selection": {
+    "max_fastqs_per_configuration": 2,
+    "primary_read_rule": "largest_measurement_span",
+    "secondary_read_rule": "maximum_additional_ontology_role_coverage",
+    "require_positive_declared_compressed_size": true
+  },
   "sampling": {
     "records_per_fastq": [
       1000,
