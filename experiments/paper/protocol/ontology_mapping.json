@@ -31,6 +31,19 @@
       "common": 50
     },
     "allocation_shortfall": "round_robin_stratum_precedence",
+    "review_package_seeds": {
+      "reviewer_1": 202607141,
+      "reviewer_2": 202607142
+    },
+    "response_contract": {
+      "term_delimiter": ";",
+      "context_sufficient_values": ["yes", "no"],
+      "confidence_values": ["high", "medium", "low"],
+      "unknown_term_must_be_exclusive": true,
+      "insufficient_context_requires_unknown": true
+    },
+    "agreement_endpoint": "order_insensitive_exact_term_set",
+    "adjudication_required_for": "term_set_disagreement",
     "reviewers": 2,
     "blind_registry_mapping": true
   },
