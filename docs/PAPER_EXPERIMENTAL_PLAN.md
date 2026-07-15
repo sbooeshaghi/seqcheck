@@ -293,6 +293,12 @@ The machine-readable condition definition is
 sample conditions and one complete-stream reference per FASTQ. The sample
 matrix manifest must contain all 12 bounded conditions before seqcheck runs.
 
+Execute the frozen matrix with `scripts/run_sampling_calibration.py`. The runner
+verifies the case-selection and protocol hashes, creates each bounded matrix in
+one source traversal, runs the complete reference, and writes reconciled report,
+metric, scalar-error, and performance tables. A run advances to analysis only
+when `validation/sampling_calibration.json` reports `valid: true`.
+
 Run each local performance condition three times after one warm-up run. Measure
 wall time, peak resident memory, records processed, compressed bytes read when
 available, and report size. Report local computation and remote transfer

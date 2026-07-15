@@ -69,3 +69,19 @@ to compute its content hash, writes deterministic gzip files, records all 12
 sample conditions per FASTQ, and refuses to overwrite an existing output root.
 The complete-stream seqcheck report is the thirteenth condition and runs from
 the source rather than a retained copy.
+
+Run the complete calibration after case selection:
+
+```bash
+python3 scripts/run_sampling_calibration.py \
+  --case-selection-manifest experiments/paper/runs/<run-id>/case-selection/manifests/case_selection.json \
+  --sampling-protocol experiments/paper/protocol/sampling_calibration.json \
+  --seqcheck-bin target/release/seqcheck \
+  --output-root experiments/paper/runs/<run-id>/sampling-calibration
+```
+
+The runner creates each bounded sample matrix in one source traversal, runs the
+complete-stream reference, measures every planned seqcheck replicate, and
+exports canonical reports, raw metrics, scalar errors, and performance rows. It
+refuses to overwrite a run or accept changed input hashes. The run is usable
+only when `validation/sampling_calibration.json` reports `valid: true`.
