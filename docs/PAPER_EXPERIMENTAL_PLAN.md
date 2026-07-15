@@ -370,6 +370,16 @@ Each operator has an applicability rule. For example, a whitelist perturbation
 is applied only to a region with `sequence_type: onlist`. Inapplicable cases are
 recorded rather than counted as failures.
 
+The operator definitions, stochastic fractions, seeds, expected process
+outcomes, and target metrics are frozen in
+`experiments/paper/protocol/perturbations.json`. Before any FASTQ or spec is
+modified, `scripts/build_perturbation_cases.py` emits one content-addressed
+applicability record per configuration-operator pair. An applicable record
+names the exact file, read, region, coordinate interval, sequence, and resource
+identity used to generate the condition. This separates a missing biological
+feature from a failed detection and prevents the executor from selecting a
+different target after results are seen.
+
 Each spec mutation must also declare whether `seqspec check` is expected to pass.
 The primary read-versus-spec benchmark uses internally valid-but-wrong specs.
 Every generated spec is checked before seqcheck runs, and a mutation is excluded

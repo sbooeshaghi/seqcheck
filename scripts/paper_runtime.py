@@ -222,12 +222,36 @@ def script_identity(path: Path, *, version: str) -> dict[str, Any]:
     }
 
 
+def executable_identity(path: Path, *, timeout_seconds: int = 30) -> dict[str, Any]:
+    path = path.resolve()
+    completed = subprocess.run(
+        [str(path), "--version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+    )
+    version = completed.stdout.strip() or completed.stderr.strip()
+    if completed.returncode != 0 or not version:
+        raise ValueError(f"could not identify executable: {path}")
+    return {
+        "path": str(path),
+        "sha256": file_sha256(path),
+        "size_bytes": path.stat().st_size,
+        "version": version,
+    }
+
+
 def functional_script_identity(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "version": value["version"],
         "sha256": value["sha256"],
         "python": value["python"],
     }
+
+
+def functional_executable_identity(value: dict[str, Any]) -> dict[str, Any]:
+    return {"sha256": value["sha256"], "version": value["version"]}
 
 
 def git_output(root: Path, *args: str) -> str:

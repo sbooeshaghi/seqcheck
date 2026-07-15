@@ -190,7 +190,7 @@ def run_sampling_calibration(
     output_root.mkdir(parents=True)
     sampler_core = sampler_script.with_name("sample_fastq.py")
     tools = {
-        "seqcheck": executable_identity(seqcheck_bin),
+        "seqcheck": runtime.executable_identity(seqcheck_bin),
         "sampler": runtime.script_identity(sampler_script, version=SAMPLER_VERSION),
         "sampler_core": runtime.script_identity(
             sampler_core, version=SAMPLER_CORE_VERSION
@@ -206,7 +206,7 @@ def run_sampling_calibration(
         "schema_version": SCHEMA_VERSION,
         "selection_id": selection_manifest["selection_id"],
         "sampling_protocol_sha256": runtime.file_sha256(protocol_path),
-        "seqcheck": functional_executable_identity(tools["seqcheck"]),
+        "seqcheck": runtime.functional_executable_identity(tools["seqcheck"]),
         "sampler": runtime.functional_script_identity(tools["sampler"]),
         "sampler_core": runtime.functional_script_identity(tools["sampler_core"]),
         "runtime": runtime.functional_script_identity(tools["runtime"]),
@@ -1098,29 +1098,6 @@ def source_compressed_bytes(case: dict[str, Any], matrix: dict[str, Any]) -> int
     if not is_remote_source(source):
         return Path(source).stat().st_size
     return int(case["declared_compressed_bytes"])
-
-
-def executable_identity(path: Path) -> dict[str, Any]:
-    completed = subprocess.run(
-        [str(path), "--version"],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    version = completed.stdout.strip() or completed.stderr.strip()
-    if completed.returncode != 0 or not version:
-        raise ValueError(f"could not identify executable: {path}")
-    return {
-        "path": str(path),
-        "sha256": runtime.file_sha256(path),
-        "size_bytes": path.stat().st_size,
-        "version": version,
-    }
-
-
-def functional_executable_identity(value: dict[str, Any]) -> dict[str, Any]:
-    return {"sha256": value["sha256"], "version": value["version"]}
 
 
 def required_string(value: dict[str, Any], field: str) -> str:

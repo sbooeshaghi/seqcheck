@@ -1,0 +1,544 @@
+{
+  "schema_version": "0.1.0",
+  "experiment_id": "controlled-read-versus-spec-perturbations",
+  "principles": {
+    "one_conceptual_property_per_condition": true,
+    "preserve_fastq_record_names": true,
+    "preserve_read_length_except_for_operator": "D01",
+    "require_declared_seqspec_check_outcome": true,
+    "require_target_file_read_region": true
+  },
+  "stochastic_conditions": {
+    "event_fractions": [
+      0.0001,
+      0.001,
+      0.01,
+      0.05,
+      0.1
+    ],
+    "seeds": [
+      101,
+      211,
+      307
+    ],
+    "selection_method": "hash_ranked_record_ids"
+  },
+  "operators": [
+    {
+      "operator_id": "S01",
+      "name": "unexpected_or_ambiguous_fastq_name",
+      "layer": "input",
+      "stochastic": false,
+      "variants": [
+        "unexpected_name",
+        "ambiguous_name"
+      ],
+      "applicability": {
+        "required": [
+          "at_least_one_selected_fastq"
+        ],
+        "variant_requirements": {
+          "ambiguous_name": "two_expected_files_share_a_resolvable_basename"
+        }
+      },
+      "mutation": "rename_or_alias_the_input_without_changing_its_bytes",
+      "expected_seqspec_check": "not_applicable",
+      "target": {
+        "process_outcome": "failure",
+        "checks": [
+          "input_check"
+        ],
+        "assessment_codes": [],
+        "metric_names": [],
+        "stderr_patterns": [
+          "could not match",
+          "ambiguous"
+        ],
+        "localization": [
+          "file"
+        ]
+      }
+    },
+    {
+      "operator_id": "S02",
+      "name": "swap_fastq_contents",
+      "layer": "input",
+      "stochastic": false,
+      "variants": [
+        "pairwise_swap"
+      ],
+      "applicability": {
+        "required": [
+          "at_least_two_selected_fastqs",
+          "distinct_seqspec_read_ids"
+        ]
+      },
+      "mutation": "swap_complete_fastq_contents_while_retaining_expected_filenames",
+      "expected_seqspec_check": "not_applicable",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "length",
+          "coverage",
+          "fixed",
+          "onlist",
+          "random"
+        ],
+        "assessment_codes": [],
+        "metric_names": [
+          "out_of_range_fraction",
+          "covered_fraction",
+          "exact_match_fraction",
+          "exact_onlist_fraction",
+          "sequence_entropy_fraction"
+        ],
+        "localization": [
+          "file",
+          "read"
+        ]
+      }
+    },
+    {
+      "operator_id": "S03",
+      "name": "omit_expected_fastq",
+      "layer": "input",
+      "stochastic": false,
+      "variants": [
+        "omit_one"
+      ],
+      "applicability": {
+        "required": [
+          "at_least_two_selected_fastqs"
+        ]
+      },
+      "mutation": "omit_one_expected_input_from_the_seqcheck_invocation",
+      "expected_seqspec_check": "not_applicable",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "input_check"
+        ],
+        "assessment_codes": [
+          "missing_expected_files"
+        ],
+        "metric_names": [
+          "missing_expected_file_ids"
+        ],
+        "localization": [
+          "file",
+          "read"
+        ]
+      }
+    },
+    {
+      "operator_id": "S04",
+      "name": "wrong_read_length_bounds",
+      "layer": "spec",
+      "stochastic": false,
+      "variants": [
+        "exclude_observed_length"
+      ],
+      "applicability": {
+        "required": [
+          "selected_read",
+          "schema_valid_alternative_length_interval"
+        ]
+      },
+      "mutation": "change_one_reads_min_len_or_max_len_to_exclude_the_observed_length",
+      "expected_seqspec_check": "pass",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "length"
+        ],
+        "assessment_codes": [
+          "length_out_of_range"
+        ],
+        "metric_names": [
+          "out_of_range_fraction"
+        ],
+        "localization": [
+          "file",
+          "read"
+        ]
+      }
+    },
+    {
+      "operator_id": "S05",
+      "name": "shift_region_boundary",
+      "layer": "spec",
+      "stochastic": false,
+      "variants": [
+        "shift_1",
+        "shift_4",
+        "shift_8"
+      ],
+      "applicability": {
+        "required": [
+          "adjacent_leaf_regions_on_selected_read",
+          "at_least_one_region_is_fixed_onlist_or_random",
+          "donor_region_remains_positive_length"
+        ]
+      },
+      "mutation": "move_one_boundary_by_delta_while_preserving_combined_adjacent_length",
+      "expected_seqspec_check": "pass",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "coverage",
+          "fixed",
+          "onlist",
+          "random"
+        ],
+        "assessment_codes": [],
+        "metric_names": [
+          "covered_fraction",
+          "exact_match_fraction",
+          "exact_onlist_fraction",
+          "sequence_entropy_fraction"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "S06",
+      "name": "flip_read_strand",
+      "layer": "spec",
+      "stochastic": false,
+      "variants": [
+        "pos_to_neg",
+        "neg_to_pos"
+      ],
+      "applicability": {
+        "required": [
+          "selected_read_strand_is_pos_or_neg",
+          "projected_non_palindromic_fixed_region"
+        ]
+      },
+      "mutation": "flip_one_reads_declared_strand",
+      "expected_seqspec_check": "pass",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "fixed"
+        ],
+        "assessment_codes": [
+          "fixed_exact_match_absent"
+        ],
+        "metric_names": [
+          "exact_match_fraction",
+          "orientation_counts"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "S07",
+      "name": "wrong_primer_anchor",
+      "layer": "spec",
+      "stochastic": false,
+      "variants": [
+        "alternate_fixed_primer"
+      ],
+      "applicability": {
+        "required": [
+          "selected_read",
+          "different_fixed_scannable_region_in_modality"
+        ]
+      },
+      "mutation": "point_one_reads_primer_id_to_a_different_fixed_scannable_region",
+      "expected_seqspec_check": "pass",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "input_check",
+          "primer"
+        ],
+        "assessment_codes": [],
+        "metric_names": [
+          "primer_classifications",
+          "primer_classification_kind",
+          "forward_start_hit_fraction",
+          "forward_internal_hit_fraction",
+          "reverse_complement_start_hit_fraction",
+          "reverse_complement_internal_hit_fraction",
+          "absent_fraction"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "S08",
+      "name": "wrong_fixed_motif",
+      "layer": "spec",
+      "stochastic": false,
+      "variants": [
+        "deterministic_replacement",
+        "reverse_complement"
+      ],
+      "applicability": {
+        "required": [
+          "projected_fixed_region",
+          "concrete_acgt_sequence",
+          "non_palindromic_for_reverse_complement"
+        ]
+      },
+      "mutation": "replace_one_fixed_sequence_with_a_same_length_sequence",
+      "expected_seqspec_check": "pass",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "fixed"
+        ],
+        "assessment_codes": [
+          "fixed_exact_match_absent"
+        ],
+        "metric_names": [
+          "exact_match_fraction",
+          "orientation_counts",
+          "offset_histogram",
+          "top_nonmatching_sequences"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "S09",
+      "name": "incompatible_onlist",
+      "layer": "spec_resource",
+      "stochastic": false,
+      "variants": [
+        "disjoint_same_length_onlist"
+      ],
+      "applicability": {
+        "required": [
+          "projected_onlist_region",
+          "loadable_onlist_resource"
+        ]
+      },
+      "mutation": "replace_one_onlist_resource_with_a_content_addressed_disjoint_list",
+      "expected_seqspec_check": "pass",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "onlist"
+        ],
+        "assessment_codes": [
+          "offlist_sequences_detected"
+        ],
+        "metric_names": [
+          "exact_onlist_fraction",
+          "offlist_count",
+          "top_offlist_sequences"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "S10",
+      "name": "unavailable_onlist",
+      "layer": "spec_resource",
+      "stochastic": false,
+      "variants": [
+        "missing_local_resource"
+      ],
+      "applicability": {
+        "required": [
+          "projected_local_onlist_region"
+        ]
+      },
+      "mutation": "materialize_the_spec_without_the_declared_local_onlist_resource",
+      "expected_seqspec_check": "pass",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "onlist"
+        ],
+        "assessment_codes": [
+          "missing_onlist_resource"
+        ],
+        "metric_names": [
+          "fetch_load_status"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "D01",
+      "name": "truncate_reads",
+      "layer": "read",
+      "stochastic": true,
+      "variants": [
+        "truncate_before_expected_end"
+      ],
+      "applicability": {
+        "required": [
+          "selected_fastq",
+          "positive_truncation_length",
+          "truncation_crosses_a_projected_region_boundary"
+        ]
+      },
+      "mutation": "truncate_selected_sequences_and_quality_strings_without_changing_record_names",
+      "expected_seqspec_check": "not_applicable",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "length",
+          "coverage"
+        ],
+        "assessment_codes": [
+          "length_out_of_range"
+        ],
+        "metric_names": [
+          "out_of_range_fraction",
+          "covered_fraction"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "D02",
+      "name": "corrupt_fixed_motif",
+      "layer": "read",
+      "stochastic": true,
+      "variants": [
+        "single_base_substitution"
+      ],
+      "applicability": {
+        "required": [
+          "projected_fixed_region",
+          "covered_concrete_acgt_position"
+        ]
+      },
+      "mutation": "substitute_one_fixed_region_base_in_selected_records_without_changing_read_length",
+      "expected_seqspec_check": "not_applicable",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "fixed"
+        ],
+        "assessment_codes": [
+          "fixed_exact_match_partial",
+          "fixed_exact_match_absent"
+        ],
+        "metric_names": [
+          "exact_match_fraction",
+          "top_nonmatching_sequences"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "D03",
+      "name": "replace_onlist_sequence",
+      "layer": "read",
+      "stochastic": true,
+      "variants": [
+        "deterministic_offlist_substitution"
+      ],
+      "applicability": {
+        "required": [
+          "projected_onlist_region",
+          "loadable_onlist_resource",
+          "covered_region"
+        ]
+      },
+      "mutation": "replace_one_projected_onlist_sequence_with_a_same_length_offlist_sequence",
+      "expected_seqspec_check": "not_applicable",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "onlist"
+        ],
+        "assessment_codes": [
+          "offlist_sequences_detected"
+        ],
+        "metric_names": [
+          "exact_onlist_fraction",
+          "offlist_count",
+          "top_offlist_sequences"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    },
+    {
+      "operator_id": "D04",
+      "name": "alter_primer_motif",
+      "layer": "read",
+      "stochastic": true,
+      "variants": [
+        "introduce_by_substitution",
+        "remove_by_substitution",
+        "reverse_complement_by_substitution"
+      ],
+      "applicability": {
+        "required": [
+          "selected_read_has_fixed_scannable_primer",
+          "covered_same_length_substitution_window"
+        ]
+      },
+      "mutation": "alter_a_primer_window_by_length_preserving_substitution_in_selected_records",
+      "expected_seqspec_check": "not_applicable",
+      "target": {
+        "process_outcome": "success",
+        "checks": [
+          "primer"
+        ],
+        "assessment_codes": [
+          "primer_sequence_detected_in_reads",
+          "primer_absent_from_reads"
+        ],
+        "metric_names": [
+          "forward_start_hit_fraction",
+          "forward_internal_hit_fraction",
+          "reverse_complement_start_hit_fraction",
+          "reverse_complement_internal_hit_fraction",
+          "absent_fraction",
+          "forward_hit_positions",
+          "reverse_complement_hit_positions"
+        ],
+        "localization": [
+          "file",
+          "read",
+          "region"
+        ]
+      }
+    }
+  ]
+}

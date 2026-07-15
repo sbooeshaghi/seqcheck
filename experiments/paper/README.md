@@ -101,3 +101,22 @@ bootstrap intervals. `validation/sampling_analysis.json` must report
 `valid: true`. The generated policy is ready for later experiments only when
 `policy/sampling_policy.json` also reports `frozen: true`; insufficient endpoint
 coverage remains a valid analysis but does not pass the policy-freeze gate.
+
+Before generating Experiment 2 conditions, build the applicability inventory
+from the content-addressed case selection:
+
+```bash
+python3 scripts/build_perturbation_cases.py \
+  --case-selection-manifest experiments/paper/runs/<run-id>/case-selection/manifests/case_selection.json \
+  --perturbation-protocol experiments/paper/protocol/perturbations.json \
+  --seqspec-bin ../seqspec/target/release/seqspec \
+  --output-root experiments/paper/runs/<run-id>/perturbation-inventory
+```
+
+The builder runs `seqspec check`, resolves read and region coordinates through
+the seqspec CLI, and writes one row for every configuration-operator pair. Each
+applicable row records the exact FASTQ, read, region, coordinates, sequence, and
+resource identity needed by the perturbation executor. Each inapplicable row
+records a reason. The inventory is usable only when
+`validation/perturbation_cases.json` reports `valid: true` and all selected
+variants are declared in `protocol/perturbations.json`.

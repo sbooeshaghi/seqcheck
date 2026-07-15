@@ -115,17 +115,31 @@ class PaperRuntimeTests(unittest.TestCase):
             root = Path(tmpdir)
             table = root / "table.csv"
             script = root / "tools" / "script.py"
+            executable = root / "tools" / "executable"
             script.parent.mkdir()
             script.write_text("print('first')\n", encoding="utf-8")
+            executable.write_text(
+                "#!/bin/sh\necho 'paper-tool test'\n", encoding="utf-8"
+            )
+            executable.chmod(0o755)
             MODULE.write_csv(table, [{"value": 1}], ["value"])
 
             first = MODULE.script_identity(script, version="test")
+            executable_value = MODULE.executable_identity(executable)
             rows = MODULE.read_csv(table)
             script.write_text("print('second')\n", encoding="utf-8")
             second = MODULE.script_identity(script, version="test")
 
         self.assertEqual(rows, [{"value": "1"}])
         self.assertNotEqual(first["sha256"], second["sha256"])
+        self.assertEqual(executable_value["version"], "paper-tool test")
+        self.assertEqual(
+            MODULE.functional_executable_identity(executable_value),
+            {
+                "version": "paper-tool test",
+                "sha256": executable_value["sha256"],
+            },
+        )
         self.assertEqual(
             MODULE.functional_script_identity(first),
             {
