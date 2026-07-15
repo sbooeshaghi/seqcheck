@@ -13,6 +13,14 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    import cohort_corrections as corrections_module
+except ModuleNotFoundError:
+    from scripts import cohort_corrections as corrections_module
+
+SUPPLEMENTAL_EVIDENCE_FIELDS = corrections_module.EVIDENCE_FIELDS
+load_registry = corrections_module.load_registry
+
 
 SCHEMA_VERSION = "0.1.0"
 CANDIDATE_SCHEMA_VERSION = "0.2.0"
@@ -74,6 +82,7 @@ def parse_args() -> argparse.Namespace:
 def add_candidate_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--candidate-manifest", required=True, type=Path)
     parser.add_argument("--candidates", type=Path)
+    parser.add_argument("--correction-registry", type=Path)
 
 
 def main() -> int:
@@ -84,6 +93,7 @@ def main() -> int:
                 candidate_manifest_path=args.candidate_manifest,
                 candidate_path=args.candidates,
                 output_root=args.output_root,
+                correction_registry_path=args.correction_registry,
             )
         else:
             merge_review_packages(
@@ -94,6 +104,7 @@ def main() -> int:
                 reviewer_2_package=args.reviewer_2_package,
                 reviewer_2_sheet=args.reviewer_2_sheet,
                 output_root=args.output_root,
+                correction_registry_path=args.correction_registry,
             )
     except (OSError, ValueError) as error:
         print(f"manage_cohort_reviews: {error}", file=sys.stderr)
@@ -106,8 +117,11 @@ def prepare_review_packages(
     candidate_manifest_path: Path,
     candidate_path: Path | None,
     output_root: Path,
+    correction_registry_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    source = load_candidate_source(candidate_manifest_path, candidate_path)
+    source = load_candidate_source(
+        candidate_manifest_path, candidate_path, correction_registry_path
+    )
     script_path = Path(__file__).resolve()
     output_paths = [
         output_root / f"reviewer_{slot}" / filename
@@ -135,11 +149,11 @@ def prepare_review_packages(
                 **row,
                 **{field: "" for field in REVIEW_INPUT_FIELDS},
             }
-            for row in source["candidate_rows"]
+            for row in source["review_evidence_rows"]
         ]
         sheet_fields = [
             *PACKAGE_FIELDS,
-            *source["candidate_fields"],
+            *source["review_evidence_fields"],
             *REVIEW_INPUT_FIELDS,
         ]
         write_csv(sheet_path, sheet_rows, sheet_fields)
@@ -151,15 +165,22 @@ def prepare_review_packages(
             "review_slot": slot,
             "candidate_row_count": len(source["candidate_rows"]),
             "candidate_evidence_sha256": source["candidate_evidence_sha256"],
+            "review_evidence_sha256": source["review_evidence_sha256"],
             "fields": {
                 "keys": list(KEY_FIELDS),
-                "evidence": source["candidate_fields"],
+                "evidence": source["review_evidence_fields"],
                 "editable": list(REVIEW_INPUT_FIELDS),
             },
             "tool": file_identity(script_path),
+            "dependencies": {
+                "cohort_corrections": file_identity(correction_module_path()),
+            },
             "inputs": {
                 "candidate_manifest": file_identity(candidate_manifest_path),
                 "candidate_table": file_identity(source["candidate_path"]),
+                **optional_file_identity(
+                    "correction_registry", correction_registry_path
+                ),
             },
             "prepared_sheet": file_identity(sheet_path),
         }
@@ -183,8 +204,11 @@ def merge_review_packages(
     reviewer_2_package: Path,
     reviewer_2_sheet: Path,
     output_root: Path,
+    correction_registry_path: Path | None = None,
 ) -> dict[str, Any]:
-    source = load_candidate_source(candidate_manifest_path, candidate_path)
+    source = load_candidate_source(
+        candidate_manifest_path, candidate_path, correction_registry_path
+    )
     combined_path = output_root / "tables" / "cohort_reviews.csv"
     manifest_path = output_root / "manifests" / "cohort_reviews.json"
     refuse_existing([combined_path, manifest_path], "merged review")
@@ -205,13 +229,13 @@ def merge_review_packages(
         raise ValueError("reviewer 1 and reviewer 2 must be distinct people")
 
     combined_rows = []
-    for candidate in source["candidate_rows"]:
-        key = row_key(candidate)
+    for evidence in source["review_evidence_rows"]:
+        key = row_key(evidence)
         first = review_1["rows_by_key"][key]
         second = review_2["rows_by_key"][key]
         combined_rows.append(
             {
-                **candidate,
+                **evidence,
                 **prefixed_review(first, 1),
                 **prefixed_review(second, 2),
                 "adjudication_decision": "",
@@ -221,7 +245,7 @@ def merge_review_packages(
             }
         )
 
-    combined_fields = [*source["candidate_fields"], *COMBINED_REVIEW_FIELDS]
+    combined_fields = [*source["review_evidence_fields"], *COMBINED_REVIEW_FIELDS]
     combined_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     write_csv(combined_path, combined_rows, combined_fields)
@@ -231,6 +255,8 @@ def merge_review_packages(
         "selection_id": source["selection_id"],
         "candidate_manifest_sha256": source["candidate_manifest_sha256"],
         "candidate_table_sha256": source["candidate_table_sha256"],
+        "correction_registry_sha256": source["correction_registry_sha256"],
+        "correction_module_sha256": source["correction_module_sha256"],
         "reviewer_1_package_sha256": file_sha256(reviewer_1_package),
         "reviewer_1_sheet_sha256": file_sha256(reviewer_1_sheet),
         "reviewer_2_package_sha256": file_sha256(reviewer_2_package),
@@ -244,10 +270,17 @@ def merge_review_packages(
         "selection_id": source["selection_id"],
         "candidate_row_count": len(source["candidate_rows"]),
         "candidate_evidence_sha256": source["candidate_evidence_sha256"],
+        "review_evidence_sha256": source["review_evidence_sha256"],
         "tool": file_identity(script_path),
+        "dependencies": {
+            "cohort_corrections": file_identity(correction_module_path()),
+        },
         "inputs": {
             "candidate_manifest": file_identity(candidate_manifest_path),
             "candidate_table": file_identity(source["candidate_path"]),
+            **optional_file_identity(
+                "correction_registry", correction_registry_path
+            ),
             "reviewer_1_package": file_identity(reviewer_1_package),
             "reviewer_1_sheet": file_identity(reviewer_1_sheet),
             "reviewer_2_package": file_identity(reviewer_2_package),
@@ -274,7 +307,9 @@ def merge_review_packages(
 
 
 def load_candidate_source(
-    candidate_manifest_path: Path, candidate_path: Path | None
+    candidate_manifest_path: Path,
+    candidate_path: Path | None,
+    correction_registry_path: Path | None = None,
 ) -> dict[str, Any]:
     candidate_manifest = load_json(candidate_manifest_path)
     if candidate_manifest.get("cohort_candidate_schema_version") != (
@@ -299,7 +334,12 @@ def load_candidate_source(
         raise ValueError("candidate table has duplicate fields")
     collisions = sorted(
         set(candidate_fields).intersection(
-            {*PACKAGE_FIELDS, *REVIEW_INPUT_FIELDS, *COMBINED_REVIEW_FIELDS}
+            {
+                *PACKAGE_FIELDS,
+                *SUPPLEMENTAL_EVIDENCE_FIELDS,
+                *REVIEW_INPUT_FIELDS,
+                *COMBINED_REVIEW_FIELDS,
+            }
         )
     )
     if collisions:
@@ -316,15 +356,41 @@ def load_candidate_source(
         raise ValueError(
             f"{len(mismatched)} candidate rows do not match selection id {selection_id}"
         )
+    correction_by_key = load_registry(
+        correction_registry_path,
+        selection_id,
+        set(index_rows(candidate_rows, "candidate")),
+    )
+    review_evidence_fields = [*candidate_fields, *SUPPLEMENTAL_EVIDENCE_FIELDS]
+    review_evidence_rows = []
+    for row in candidate_rows:
+        correction = correction_by_key.get(row_key(row), {})
+        review_evidence_rows.append(
+            {
+                **row,
+                "proposed_correction_manifest": correction.get("path", ""),
+                "proposed_correction_sha256": correction.get("sha256", ""),
+            }
+        )
     evidence_sha256 = evidence_sha(candidate_rows, candidate_fields)
+    review_evidence_sha256 = evidence_sha(
+        review_evidence_rows, review_evidence_fields
+    )
     return {
         "selection_id": selection_id,
         "candidate_path": resolved_candidate_path,
         "candidate_rows": candidate_rows,
         "candidate_fields": candidate_fields,
+        "review_evidence_rows": review_evidence_rows,
+        "review_evidence_fields": review_evidence_fields,
         "candidate_manifest_sha256": file_sha256(candidate_manifest_path),
         "candidate_table_sha256": file_sha256(resolved_candidate_path),
         "candidate_evidence_sha256": evidence_sha256,
+        "review_evidence_sha256": review_evidence_sha256,
+        "correction_registry_sha256": (
+            file_sha256(correction_registry_path) if correction_registry_path else ""
+        ),
+        "correction_module_sha256": file_sha256(correction_module_path()),
     }
 
 
@@ -344,7 +410,7 @@ def load_completed_review(
         raise ValueError(f"reviewer {expected_slot} package selection id changed")
     expected_field_contract = {
         "keys": list(KEY_FIELDS),
-        "evidence": source["candidate_fields"],
+        "evidence": source["review_evidence_fields"],
         "editable": list(REVIEW_INPUT_FIELDS),
     }
     if package.get("fields") != expected_field_contract:
@@ -357,6 +423,9 @@ def load_completed_review(
         "candidate_manifest_sha256": source["candidate_manifest_sha256"],
         "candidate_table_sha256": source["candidate_table_sha256"],
         "candidate_evidence_sha256": source["candidate_evidence_sha256"],
+        "review_evidence_sha256": source["review_evidence_sha256"],
+        "correction_registry_sha256": source["correction_registry_sha256"],
+        "correction_module_sha256": source["correction_module_sha256"],
     }
     for field, expected in expected_hashes.items():
         if package_hash(package, field, expected_slot) != expected:
@@ -365,7 +434,7 @@ def load_completed_review(
     rows, fields = read_csv(sheet_path)
     expected_fields = [
         *PACKAGE_FIELDS,
-        *source["candidate_fields"],
+        *source["review_evidence_fields"],
         *REVIEW_INPUT_FIELDS,
     ]
     if fields != expected_fields:
@@ -389,10 +458,10 @@ def load_completed_review(
         raise ValueError(f"reviewer {expected_slot} package id is invalid")
 
     rows_by_key = index_rows(rows, f"reviewer {expected_slot}")
-    candidate_by_key = index_rows(source["candidate_rows"], "candidate")
-    if set(rows_by_key) != set(candidate_by_key):
-        missing = len(set(candidate_by_key) - set(rows_by_key))
-        extra = len(set(rows_by_key) - set(candidate_by_key))
+    evidence_by_key = index_rows(source["review_evidence_rows"], "candidate")
+    if set(rows_by_key) != set(evidence_by_key):
+        missing = len(set(evidence_by_key) - set(rows_by_key))
+        extra = len(set(rows_by_key) - set(evidence_by_key))
         raise ValueError(
             f"reviewer {expected_slot} sheet candidate keys changed "
             f"(missing={missing}, extra={extra})"
@@ -401,8 +470,8 @@ def load_completed_review(
     evidence_rows = []
     reviewers = set()
     decision_counts: Counter[str] = Counter()
-    for candidate in source["candidate_rows"]:
-        key = row_key(candidate)
+    for evidence in source["review_evidence_rows"]:
+        key = row_key(evidence)
         row = rows_by_key[key]
         if row.get("review_package_id", "").strip() != package_id:
             raise ValueError(f"reviewer {expected_slot} sheet package id changed")
@@ -410,8 +479,8 @@ def load_completed_review(
             raise ValueError(f"reviewer {expected_slot} sheet review slot changed")
         changed = [
             field
-            for field in source["candidate_fields"]
-            if row.get(field, "") != candidate.get(field, "")
+            for field in source["review_evidence_fields"]
+            if row.get(field, "") != evidence.get(field, "")
         ]
         if changed:
             raise ValueError(
@@ -428,9 +497,9 @@ def load_completed_review(
             f"reviewer {expected_slot} sheet must use exactly one reviewer identity"
         )
     observed_evidence_sha = evidence_sha(
-        evidence_rows, source["candidate_fields"]
+        evidence_rows, source["review_evidence_fields"]
     )
-    if observed_evidence_sha != package.get("candidate_evidence_sha256"):
+    if observed_evidence_sha != package.get("review_evidence_sha256"):
         raise ValueError(f"reviewer {expected_slot} sheet evidence hash changed")
     return {
         "reviewer": next(iter(reviewers)),
@@ -440,9 +509,28 @@ def load_completed_review(
 
 
 def package_hash(package: dict[str, Any], field: str, slot: int) -> str:
-    if field in {"candidate_manifest_sha256", "candidate_table_sha256"}:
+    if field in {
+        "candidate_manifest_sha256",
+        "candidate_table_sha256",
+        "correction_registry_sha256",
+        "correction_module_sha256",
+    }:
         input_name = field.removesuffix("_sha256")
+        if field == "correction_module_sha256":
+            dependencies = package.get("dependencies")
+            identity = (
+                dependencies.get("cohort_corrections")
+                if isinstance(dependencies, dict)
+                else None
+            )
+            if not isinstance(identity, dict):
+                raise ValueError(
+                    f"reviewer {slot} package correction module identity is malformed"
+                )
+            return str(identity.get("sha256", ""))
         identity = package["inputs"].get(input_name)
+        if not identity and field == "correction_registry_sha256":
+            return ""
         if not isinstance(identity, dict):
             raise ValueError(f"reviewer {slot} package {input_name} identity is malformed")
         return str(identity.get("sha256", ""))
@@ -459,8 +547,22 @@ def package_identity_payload(
         "candidate_manifest_sha256": source["candidate_manifest_sha256"],
         "candidate_table_sha256": source["candidate_table_sha256"],
         "candidate_evidence_sha256": source["candidate_evidence_sha256"],
+        "review_evidence_sha256": source["review_evidence_sha256"],
+        "correction_registry_sha256": source["correction_registry_sha256"],
+        "correction_module_sha256": source["correction_module_sha256"],
         "prepare_script_sha256": prepare_script_sha256,
     }
+
+
+def optional_file_identity(name: str, path: Path | None) -> dict[str, Any]:
+    return {name: file_identity(path)} if path is not None else {}
+
+
+def correction_module_path() -> Path:
+    value = corrections_module.__file__
+    if value is None:
+        raise ValueError("could not resolve cohort correction module")
+    return Path(value).resolve()
 
 
 def validate_review_input(

@@ -78,6 +78,50 @@ def make_candidate_source(root: Path) -> tuple[Path, Path, list[dict[str, str]]]
     return manifest_path, candidates_path, rows
 
 
+def make_correction_registry(root: Path) -> Path:
+    correction_dir = root / "corrections" / "C1"
+    correction_dir.mkdir(parents=True)
+    correction_path = correction_dir / "correction.json"
+    correction_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1.0",
+                "status": "proposed_unapproved",
+                "selection_id": "selection",
+                "family_id": "rna",
+                "configuration_accession": "C1",
+                "rationale": "Add the omitted index read.",
+                "approval": {
+                    "reviewer_1": "",
+                    "reviewer_1_decision": "",
+                    "reviewer_2": "",
+                    "reviewer_2_decision": "",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry_path = root / "corrections" / "correction_registry.json"
+    registry_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.1.0",
+                "selection_id": "selection",
+                "corrections": [
+                    {
+                        "family_id": "rna",
+                        "configuration_accession": "C1",
+                        "manifest": "C1/correction.json",
+                        "sha256": MODULE.file_sha256(correction_path),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return registry_path
+
+
 def complete_sheet(
     path: Path,
     reviewer: str,
@@ -228,6 +272,70 @@ class ManageCohortReviewsTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "changed candidate evidence"):
                 self.merge(root, manifest_path, packages)
+
+    def test_correction_registry_is_read_only_review_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            manifest_path, _, _ = make_candidate_source(root)
+            registry_path = make_correction_registry(root)
+            packages = root / "packages"
+            MODULE.prepare_review_packages(
+                candidate_manifest_path=manifest_path,
+                candidate_path=None,
+                output_root=packages,
+                correction_registry_path=registry_path,
+            )
+            sheet_1 = packages / "reviewer_1" / "cohort_review.csv"
+            sheet_2 = packages / "reviewer_2" / "cohort_review.csv"
+            rows, fields = read_csv(sheet_1)
+            self.assertTrue(rows[0]["proposed_correction_manifest"].endswith(
+                "C1/correction.json"
+            ))
+            self.assertTrue(rows[0]["proposed_correction_sha256"])
+            self.assertEqual(rows[1]["proposed_correction_manifest"], "")
+            complete_sheet(sheet_1, "Reviewer A")
+            complete_sheet(sheet_2, "Reviewer B")
+
+            merged_root = root / "merged"
+            MODULE.merge_review_packages(
+                candidate_manifest_path=manifest_path,
+                candidate_path=None,
+                reviewer_1_package=packages
+                / "reviewer_1"
+                / "review_package.json",
+                reviewer_1_sheet=sheet_1,
+                reviewer_2_package=packages
+                / "reviewer_2"
+                / "review_package.json",
+                reviewer_2_sheet=sheet_2,
+                output_root=merged_root,
+                correction_registry_path=registry_path,
+            )
+            merged, _ = read_csv(merged_root / "tables" / "cohort_reviews.csv")
+            self.assertEqual(
+                merged[0]["proposed_correction_manifest"],
+                rows[0]["proposed_correction_manifest"],
+            )
+
+            tampered_root = root / "tampered"
+            rows, fields = read_csv(sheet_1)
+            rows[0]["proposed_correction_sha256"] = "changed"
+            write_csv(sheet_1, rows, fields)
+            with self.assertRaisesRegex(ValueError, "changed candidate evidence"):
+                MODULE.merge_review_packages(
+                    candidate_manifest_path=manifest_path,
+                    candidate_path=None,
+                    reviewer_1_package=packages
+                    / "reviewer_1"
+                    / "review_package.json",
+                    reviewer_1_sheet=sheet_1,
+                    reviewer_2_package=packages
+                    / "reviewer_2"
+                    / "review_package.json",
+                    reviewer_2_sheet=sheet_2,
+                    output_root=tampered_root,
+                    correction_registry_path=registry_path,
+                )
 
     def test_merge_rejects_a_changed_package_identity(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -128,6 +128,12 @@ the original spec and approve an explicit, versioned correction before a fifth
 configuration can serve as a baseline. The uncorrected record remains an audit
 observation.
 
+The proposed `IGVFFI7663RZZB` correction is registered as immutable review
+evidence. Both independent reviewers must approve that exact correction; an
+adjudicator cannot override either reviewer for a corrected baseline. The freeze
+gate revalidates the corrected seqspec and recomputes its FASTQ, structure, and
+deduplication evidence while preserving the original candidate fields.
+
 The builder normalizes proposals to seqspec 0.5.0, records schema/structural
 validation separately from network-dependent resource validation, fingerprints
 the library/read structure without FASTQ bindings, and compares spec-declared

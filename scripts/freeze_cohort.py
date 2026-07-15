@@ -7,11 +7,26 @@ import argparse
 import csv
 import hashlib
 import json
+import subprocess
 import sys
 from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import cohort_corrections as corrections_module
+except ModuleNotFoundError:
+    from scripts import cohort_corrections as corrections_module
+
+EFFECTIVE_FIELDS = corrections_module.EFFECTIVE_FIELDS
+command_identity = corrections_module.command_identity
+effective_candidate_fields = corrections_module.effective_candidate_fields
+included_keys = corrections_module.included_keys
+load_registry = corrections_module.load_registry
+reconcile_evidence = corrections_module.reconcile_evidence
+resolve_seqspec_command = corrections_module.resolve_seqspec_command
+validate_correction = corrections_module.validate_correction
 
 
 SCHEMA_VERSION = "0.1.0"
@@ -67,6 +82,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-per-family", type=int, default=5)
     parser.add_argument("--calibration-per-family", type=int, default=2)
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--correction-registry", type=Path)
+    parser.add_argument("--seqspec-bin", type=Path)
+    parser.add_argument("--structural-check-timeout-seconds", type=int, default=120)
+    parser.add_argument("--resource-check-timeout-seconds", type=int, default=20)
+    parser.add_argument("--network-attempts", type=int, default=2)
+    parser.add_argument("--retry-backoff-seconds", type=float, default=1.0)
     return parser.parse_args()
 
 
@@ -86,6 +107,14 @@ def run(args: argparse.Namespace) -> int:
         raise ValueError(
             "calibration count must be positive and less than the family target"
         )
+    if args.structural_check_timeout_seconds <= 0:
+        raise ValueError("structural check timeout must be positive")
+    if args.resource_check_timeout_seconds <= 0:
+        raise ValueError("resource check timeout must be positive")
+    if args.network_attempts <= 0:
+        raise ValueError("network attempts must be positive")
+    if args.retry_backoff_seconds < 0:
+        raise ValueError("retry backoff must be nonnegative")
 
     candidate_manifest = load_json(args.candidate_manifest)
     rules_payload = load_json(args.family_rules)
@@ -112,6 +141,38 @@ def run(args: argparse.Namespace) -> int:
         else int(candidate_manifest.get("rules", {}).get("selection_seed", 0))
     )
 
+    correction_registry = load_registry(
+        args.correction_registry,
+        selection_id,
+        set(strict_index(candidate_rows, "candidate")),
+    )
+    correction_evidence_errors = reconcile_evidence(
+        review_rows, correction_registry
+    )
+    correction_overlays: dict[tuple[str, str], dict[str, str]] = {}
+    correction_validation_errors: dict[tuple[str, str], list[str]] = {}
+    seqspec_identity: dict[str, Any] | None = None
+    correction_keys_to_validate = included_keys(
+        review_rows, correction_registry, effective_review_decision
+    )
+    if correction_keys_to_validate:
+        seqspec_command = resolve_seqspec_command(args.seqspec_bin, candidate_manifest)
+        seqspec_identity = command_identity(seqspec_command)
+        candidate_by_key = strict_index(candidate_rows, "candidate")
+        for key in sorted(correction_keys_to_validate):
+            try:
+                correction_overlays[key] = validate_correction(
+                    candidate=candidate_by_key[key],
+                    registry_entry=correction_registry[key],
+                    seqspec_command=seqspec_command,
+                    structural_timeout_seconds=args.structural_check_timeout_seconds,
+                    resource_timeout_seconds=args.resource_check_timeout_seconds,
+                    network_attempts=args.network_attempts,
+                    retry_backoff_seconds=args.retry_backoff_seconds,
+                )
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                correction_validation_errors[key] = [str(error)]
+
     validation, included = validate_reviews(
         selection_id=selection_id,
         candidate_rows=candidate_rows,
@@ -120,6 +181,9 @@ def run(args: argparse.Namespace) -> int:
         review_fields=review_fields,
         family_ids=family_ids,
         target_per_family=args.target_per_family,
+        correction_evidence_errors=correction_evidence_errors,
+        correction_validation_errors=correction_validation_errors,
+        correction_overlays=correction_overlays,
     )
     output_root = args.output_root.resolve()
     validation_dir = output_root / "validation"
@@ -136,10 +200,17 @@ def run(args: argparse.Namespace) -> int:
             "schema_version": SCHEMA_VERSION,
             "selection_id": selection_id,
             "freeze_script_sha256": file_sha256(Path(__file__).resolve()),
+            "correction_module_sha256": correction_module_sha256(),
             "candidate_manifest_sha256": file_sha256(args.candidate_manifest),
             "candidate_table_sha256": file_sha256(candidate_path),
             "reviews_sha256": file_sha256(args.reviews),
             "family_rules_sha256": file_sha256(args.family_rules),
+            "correction_registry_sha256": optional_file_sha256(
+                args.correction_registry
+            ),
+            "seqspec": seqspec_identity,
+            "correction_count": len(correction_registry),
+            "validated_correction_count": len(correction_overlays),
             "target_per_family": args.target_per_family,
             "calibration_per_family": args.calibration_per_family,
             "split_seed": seed,
@@ -165,6 +236,9 @@ def run(args: argparse.Namespace) -> int:
         selection_id,
     )
     output_fields = list(review_fields)
+    for field in EFFECTIVE_FIELDS:
+        if field not in output_fields:
+            output_fields.append(field)
     if "effective_review_decision" not in output_fields:
         output_fields.append("effective_review_decision")
     write_csv(cohort_path, frozen_rows, output_fields)
@@ -172,10 +246,15 @@ def run(args: argparse.Namespace) -> int:
         "schema_version": SCHEMA_VERSION,
         "selection_id": selection_id,
         "freeze_script_sha256": file_sha256(Path(__file__).resolve()),
+        "correction_module_sha256": correction_module_sha256(),
         "candidate_manifest_sha256": file_sha256(args.candidate_manifest),
         "candidate_table_sha256": file_sha256(candidate_path),
         "reviews_sha256": file_sha256(args.reviews),
         "family_rules_sha256": file_sha256(args.family_rules),
+        "correction_registry_sha256": optional_file_sha256(
+            args.correction_registry
+        ),
+        "seqspec": seqspec_identity,
         "target_per_family": args.target_per_family,
         "calibration_per_family": args.calibration_per_family,
         "split_seed": seed,
@@ -184,6 +263,11 @@ def run(args: argparse.Namespace) -> int:
                 "family_id": row["final_family"],
                 "configuration_accession": row["configuration_accession"],
                 "split": row["split"],
+                "correction_manifest_sha256": row["correction_manifest_sha256"],
+                "effective_spec_sha256": row["effective_spec_sha256"],
+                "effective_deduplication_key": row[
+                    "effective_deduplication_key"
+                ],
             }
             for row in frozen_rows
         ],
@@ -198,6 +282,9 @@ def run(args: argparse.Namespace) -> int:
         "split_assigned": True,
         "tool": {
             "script": file_identity(Path(__file__).resolve()),
+            "dependencies": {
+                "cohort_corrections": file_identity(correction_module_path()),
+            },
         },
         "policy": {
             "target_per_family": args.target_per_family,
@@ -207,6 +294,7 @@ def run(args: argparse.Namespace) -> int:
             ),
             "split_seed": seed,
             "required_independent_reviewers": 2,
+            "corrected_baseline_requires_unanimous_review": True,
             "baseline_requirements": BASELINE_REQUIREMENTS,
         },
         "inputs": {
@@ -214,15 +302,35 @@ def run(args: argparse.Namespace) -> int:
             "candidate_table": file_identity(candidate_path),
             "reviews": file_identity(args.reviews),
             "family_rules": file_identity(args.family_rules),
+            **optional_file_identity(
+                "correction_registry", args.correction_registry
+            ),
         },
         "outputs": {
             "cohort": file_identity(cohort_path),
             "validation": file_identity(validation_path),
         },
+        "corrections": [
+            {
+                "family_id": row["final_family"],
+                "configuration_accession": row["configuration_accession"],
+                "manifest": file_identity(Path(row["correction_manifest"])),
+                "effective_spec": file_identity(Path(row["effective_spec_path"])),
+                "effective_structure_sha256": row["effective_structure_sha256"],
+                "effective_deduplication_key": row[
+                    "effective_deduplication_key"
+                ],
+            }
+            for row in frozen_rows
+            if row.get("correction_applied") == "true"
+        ],
         "counts": {
             "total": len(frozen_rows),
             "calibration": sum(row["split"] == "calibration" for row in frozen_rows),
             "evaluation": sum(row["split"] == "evaluation" for row in frozen_rows),
+            "corrected": sum(
+                row.get("correction_applied") == "true" for row in frozen_rows
+            ),
             "families": dict(
                 sorted(Counter(row["final_family"] for row in frozen_rows).items())
             ),
@@ -246,7 +354,13 @@ def validate_reviews(
     review_fields: list[str],
     family_ids: list[str],
     target_per_family: int,
+    correction_evidence_errors: dict[tuple[str, str], list[str]] | None = None,
+    correction_validation_errors: dict[tuple[str, str], list[str]] | None = None,
+    correction_overlays: dict[tuple[str, str], dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    correction_evidence_errors = correction_evidence_errors or {}
+    correction_validation_errors = correction_validation_errors or {}
+    correction_overlays = correction_overlays or {}
     errors: list[str] = []
     row_errors: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -274,6 +388,7 @@ def validate_reviews(
         candidate = candidates_by_key[key]
         review = reviews_by_key[key]
         problems = compare_candidate_fields(candidate, review, candidate_fields)
+        problems.extend(correction_evidence_errors.get(key, []))
         if candidate.get("selection_id", "") != selection_id:
             problems.append("candidate selection_id does not match manifest")
         if review.get("selection_id", "") != selection_id:
@@ -291,16 +406,39 @@ def validate_reviews(
                 problems.append(
                     "included row final_family must equal its proposed family"
                 )
+            correction_expected = (
+                key in correction_overlays or key in correction_validation_errors
+            )
+            if correction_expected and any(
+                review.get(f"reviewer_{number}_decision", "").strip() != "include"
+                for number in (1, 2)
+            ):
+                problems.append(
+                    "corrected baseline requires unanimous include decisions from both reviewers"
+                )
+            problems.extend(correction_validation_errors.get(key, []))
+            effective = correction_overlays.get(key)
+            if correction_expected and effective is None:
+                problems.append("proposed correction did not pass freeze-time validation")
+            if effective is None:
+                effective = effective_candidate_fields(candidate)
             for field, expected in BASELINE_REQUIREMENTS.items():
-                if candidate.get(field, "") != expected:
+                effective_field = f"effective_{field}"
+                if effective.get(effective_field, "") != expected:
                     problems.append(
                         f"included row requires {field}={expected}, observed "
-                        f"{candidate.get(field, '') or '<missing>'}"
+                        f"{effective.get(effective_field, '') or '<missing>'}"
                     )
-            if not candidate.get("deduplication_key", "").strip():
+            if not effective.get("effective_deduplication_key", "").strip():
                 problems.append("included row is missing a deduplication key")
             if not problems:
-                included.append({**review, "effective_review_decision": decision})
+                included.append(
+                    {
+                        **review,
+                        **effective,
+                        "effective_review_decision": decision,
+                    }
+                )
         elif decision == "exclude" and review.get("final_family", "").strip():
             problems.append("excluded row must not have final_family")
         if problems:
@@ -341,7 +479,7 @@ def validate_reviews(
             "included configurations are not unique: " + ", ".join(duplicate_accessions)
         )
     duplicate_structures = duplicate_values(
-        row["deduplication_key"] for row in included
+        row["effective_deduplication_key"] for row in included
     )
     if duplicate_structures:
         errors.append(
@@ -365,6 +503,9 @@ def validate_reviews(
             "candidate_row_count": len(candidate_rows),
             "review_row_count": len(review_rows),
             "included_row_count": len(included),
+            "included_correction_count": sum(
+                row.get("correction_applied") == "true" for row in included
+            ),
             "included_by_family": dict(sorted(included_by_family.items())),
             "effective_decision_counts": dict(sorted(effective_counts.items())),
             "errors": errors,
@@ -372,6 +513,23 @@ def validate_reviews(
             "warnings": warnings,
         },
         included,
+    )
+
+
+def strict_index(
+    rows: list[dict[str, str]], label: str
+) -> dict[tuple[str, str], dict[str, str]]:
+    errors: list[str] = []
+    indexed = index_rows(rows, ("family_id", "configuration_accession"), label, errors)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return indexed
+
+
+def row_key(row: dict[str, str]) -> tuple[str, str]:
+    return (
+        row.get("family_id", "").strip(),
+        row.get("configuration_accession", "").strip(),
     )
 
 
@@ -411,6 +569,10 @@ def effective_review_decision(row: dict[str, str]) -> tuple[str, list[str]]:
             "review disagreement or inconclusive decision requires adjudication"
         )
     if adjudication:
+        if not needs_adjudication:
+            errors.append(
+                "adjudication must remain blank when reviewer decisions agree"
+            )
         if adjudication not in FINAL_DECISIONS:
             errors.append("adjudication_decision must be include or exclude")
         if not row.get("adjudication_rationale", "").strip():
@@ -570,6 +732,25 @@ def file_identity(path: Path) -> dict[str, Any]:
         "sha256": file_sha256(path),
         "size_bytes": path.stat().st_size,
     }
+
+
+def optional_file_sha256(path: Path | None) -> str:
+    return file_sha256(path) if path is not None else ""
+
+
+def optional_file_identity(name: str, path: Path | None) -> dict[str, Any]:
+    return {name: file_identity(path)} if path is not None else {}
+
+
+def correction_module_path() -> Path:
+    value = corrections_module.__file__
+    if value is None:
+        raise ValueError("could not resolve cohort correction module")
+    return Path(value).resolve()
+
+
+def correction_module_sha256() -> str:
+    return file_sha256(correction_module_path())
 
 
 def utc_now() -> str:

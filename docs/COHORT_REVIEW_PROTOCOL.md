@@ -17,6 +17,11 @@ Reviewers compare four records:
 3. The portal-linked FASTQ accessions in `fastq_accessions`
 4. The seqspec-declared FASTQ accessions in `expected_fastq_accessions`
 
+When `proposed_correction_manifest` is populated, reviewers also compare the
+immutable original spec, corrected spec, and unified diff recorded in that
+manifest. The manifest must remain `proposed_unapproved`; the independent
+cohort decisions approve or reject its use.
+
 ## Independent Decisions
 
 Two reviewers inspect each row independently. The coordinator gives each
@@ -29,6 +34,7 @@ Prepare both packages from the authoritative candidate manifest and table:
 ```bash
 uv run python scripts/manage_cohort_reviews.py prepare \
   --candidate-manifest experiments/paper/runs/<run>/manifests/cohort_candidates.json \
+  --correction-registry experiments/paper/runs/<run>/corrections/correction_registry.json \
   --output-root experiments/paper/runs/<run>/review/packages
 ```
 
@@ -40,13 +46,16 @@ package identifiers but the same candidate evidence.
 Each reviewer records their name, decision, rationale, protocol URL, and date.
 These five generic columns are the only editable fields in a reviewer sheet.
 The reviewer must use the same identity on every row and must not edit the
-package identifier, slot, or copied candidate evidence. The merge command
-requires a complete decision for every candidate; it rejects partial sheets.
+package identifier, slot, copied candidate evidence, or proposed correction
+fields. The merge command requires a complete decision for every candidate; it
+rejects partial sheets.
 Allowed decisions are:
 
 - `include`: the protocol, modality, read structure, and exact FASTQ set support
-  this row as an unmodified baseline for the proposed family.
-- `exclude`: the row is not an unmodified baseline for the proposed family.
+  this row as a baseline for the proposed family. When a correction is proposed,
+  this decision also approves that exact hashed correction.
+- `exclude`: neither the source record nor its registered correction is an
+  acceptable baseline for the proposed family.
 - `inconclusive`: the available protocol or metadata cannot resolve the row.
 
 Merge the two locked sheets with their original package manifests:
@@ -54,6 +63,7 @@ Merge the two locked sheets with their original package manifests:
 ```bash
 uv run python scripts/manage_cohort_reviews.py merge \
   --candidate-manifest experiments/paper/runs/<run>/manifests/cohort_candidates.json \
+  --correction-registry experiments/paper/runs/<run>/corrections/correction_registry.json \
   --reviewer-1-package experiments/paper/runs/<run>/review/packages/reviewer_1/review_package.json \
   --reviewer-1-sheet experiments/paper/runs/<run>/review/packages/reviewer_1/cohort_review.csv \
   --reviewer-2-package experiments/paper/runs/<run>/review/packages/reviewer_2/review_package.json \
@@ -74,6 +84,37 @@ output and edit only `adjudication_decision`, `adjudication_rationale`, and
 An included row sets `final_family` to its proposed `family_id`. An excluded row
 leaves `final_family` blank. Reviewers and adjudicators leave `split` blank. The
 freeze command independently rejects any changed stable candidate evidence.
+
+## Corrected Baselines
+
+A correction is an explicit exception, not a way to weaken the baseline gate.
+The registry identifies a proposal by family, configuration accession, manifest
+path, and SHA-256 hash. The proposal preserves hashes for the original spec,
+corrected spec, and unified diff. It contains no prefilled approvals.
+
+```json
+{
+  "schema_version": "0.1.0",
+  "selection_id": "<candidate selection id>",
+  "corrections": [
+    {
+      "family_id": "feature_tag",
+      "configuration_accession": "IGVFFI7663RZZB",
+      "manifest": "IGVFFI7663RZZB/correction.json",
+      "sha256": "<correction manifest SHA-256>"
+    }
+  ]
+}
+```
+
+A corrected row can enter the cohort only when both independent reviewers vote
+`include`. Adjudication cannot substitute for unanimous correction approval.
+At freeze time, `freeze_cohort.py` verifies all file hashes and the diff, reruns
+seqspec 0.5 structural and resource checks, verifies the family modality,
+requires exact corrected-spec versus portal FASTQ reconciliation, and recomputes
+the structure and deduplication hashes. The frozen table retains the original
+candidate columns and adds `correction_applied` plus `effective_*` columns for
+the spec actually used.
 
 ## Freeze Gate
 
@@ -97,10 +138,13 @@ uv run python scripts/freeze_cohort.py \
   --candidate-manifest experiments/paper/runs/<run>/manifests/cohort_candidates.json \
   --reviews experiments/paper/runs/<run>/review/adjudication/cohort_reviews.csv \
   --family-rules docs/cohort_family_rules.json \
+  --correction-registry experiments/paper/runs/<run>/corrections/correction_registry.json \
+  --seqspec-bin ../seqspec/target/debug/seqspec \
   --output-root experiments/paper/runs/<run>/freeze
 ```
 
-The current feature-tag source has only four configurations with exact FASTQ
-reconciliation. Do not weaken the gate to fill the fifth slot. Add another
-public source or approve a separately versioned correction that preserves the
-original record and its diff.
+The current feature-tag source has only four unmodified configurations with
+exact FASTQ reconciliation. The review package contains one proposed correction
+for `IGVFFI7663RZZB`, which adds the omitted public i2 read. It remains
+unapproved until both reviewers include it. Do not weaken the gate to fill the
+fifth slot.
