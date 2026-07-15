@@ -247,3 +247,79 @@ retained even when an endpoint is incomplete or a scientific target is missed.
 Conditions deliberately expected to fail `seqspec check`, such as S10, remain in
 the raw call and operator tables but are excluded from primary sensitivity and
 localization estimates.
+
+Run the current IGVF audit only after Experiment 1 has produced a frozen prefix
+sampling policy. Freeze the portal records before making any data requests:
+
+```bash
+python3 scripts/freeze_igvf_audit_portal.py \
+  --output-root experiments/paper/runs/<run-id>/igvf-portal
+```
+
+The resulting `manifests/portal.json` identifies the exact configuration and
+linked FASTQ metadata used by the study. Run the primary audit with the same
+seqspec and seqcheck builds used by Phase 0:
+
+```bash
+python3 scripts/igvf_audit.py \
+  --portal-manifest experiments/paper/runs/<run-id>/igvf-portal/manifests/portal.json \
+  --sampling-policy experiments/paper/runs/<sampling-run>/sampling-analysis/policy/sampling_policy.json \
+  --audit-protocol experiments/paper/protocol/igvf_audit.json \
+  --output-root experiments/paper/runs/<run-id>/igvf-audit-primary
+```
+
+The audit uses the retry schedule in `protocol/igvf_audit.json`. Authentication,
+specification, and tool failures stop after one attempt; only transport failures
+are retried. `validation/reconciliation.json` must report `valid: true` before
+the repeatability subset is selected.
+
+Select the fixed 100-run subset and rerun every configuration represented in
+that selection. A selected configuration can produce extra modalities; the
+verifier compares only the selected configuration-modality keys.
+
+```bash
+python3 scripts/verify_igvf_audit_repeatability.py prepare \
+  --primary-root experiments/paper/runs/<run-id>/igvf-audit-primary \
+  --audit-protocol experiments/paper/protocol/igvf_audit.json \
+  --output-root experiments/paper/runs/<run-id>/igvf-repeat-selection
+
+repeat_accessions=()
+while IFS= read -r accession; do
+  repeat_accessions+=(--configuration-accession "$accession")
+done < experiments/paper/runs/<run-id>/igvf-repeat-selection/inputs/configuration_accessions.txt
+
+python3 scripts/igvf_audit.py \
+  --portal-manifest experiments/paper/runs/<run-id>/igvf-portal/manifests/portal.json \
+  --sampling-policy experiments/paper/runs/<sampling-run>/sampling-analysis/policy/sampling_policy.json \
+  --audit-protocol experiments/paper/protocol/igvf_audit.json \
+  "${repeat_accessions[@]}" \
+  --output-root experiments/paper/runs/<run-id>/igvf-audit-repeat
+
+python3 scripts/verify_igvf_audit_repeatability.py verify \
+  --primary-root experiments/paper/runs/<run-id>/igvf-audit-primary \
+  --repeat-root experiments/paper/runs/<run-id>/igvf-audit-repeat \
+  --selection-manifest experiments/paper/runs/<run-id>/igvf-repeat-selection/manifests/repeat_selection.json \
+  --audit-protocol experiments/paper/protocol/igvf_audit.json \
+  --output-root experiments/paper/runs/<run-id>/igvf-repeat-verification
+```
+
+Analyze the audit only when repeat verification reports `valid: true`:
+
+```bash
+python3 scripts/analyze_igvf_audit.py \
+  --audit-root experiments/paper/runs/<run-id>/igvf-audit-primary \
+  --repeatability-validation experiments/paper/runs/<run-id>/igvf-repeat-verification/validation/repeatability.json \
+  --audit-protocol experiments/paper/protocol/igvf_audit.json \
+  --family-rules docs/cohort_family_rules.json \
+  --output-root experiments/paper/runs/<run-id>/igvf-analysis
+```
+
+The analyzer reports completion over eligible configuration-modality outcomes
+and also records the number of unique configurations. Eligibility exclusions do
+not enter the completion denominator. A configuration can belong to multiple
+assay families, but multi-membership does not duplicate the overall outcome.
+Numeric metrics are first collapsed to a median within each configuration, then
+summarized across independent configurations by assay family, sequence type,
+and ontology term. Warnings and errors remain candidate inconsistencies rather
+than confirmed errors. `validation/igvf_audit_analysis.json` separates
+mechanical validity from the predeclared scientific targets.

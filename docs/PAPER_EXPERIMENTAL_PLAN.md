@@ -703,6 +703,15 @@ Summarize quantitative metrics by assay family, `sequence_type`, and ontology
 term. Report warnings as candidate inconsistencies unless they meet a frozen
 benchmark policy. Do not use laboratory rankings as a primary result.
 
+Define completion over eligible configuration-modality outcomes. Report unique
+configuration coverage beside that denominator, and report eligibility
+exclusions separately. Preserve exact multi-membership when one outcome matches
+more than one assay family, but count that outcome only once in the overall
+completion estimate. For quantitative summaries, first take the median of
+repeated region-level values within a configuration, then summarize across
+independent configurations. Stratify access classes rather than pooling public
+and controlled outcomes.
+
 The following checks must pass before analysis:
 
 - Every completed manifest entry resolves to exactly one report.
