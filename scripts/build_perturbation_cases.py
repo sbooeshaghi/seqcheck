@@ -320,6 +320,14 @@ def validate_protocol(protocol: dict[str, Any]) -> None:
         raise ValueError("perturbation seeds are invalid")
     if stochastic.get("selection_method") != "hash_ranked_record_ids":
         raise ValueError("unsupported stochastic record selection method")
+    base_sample = protocol.get("base_sample", {})
+    if base_sample.get("require_frozen_sampling_policy") is not True:
+        raise ValueError("perturbations must require a frozen sampling policy")
+    if (
+        type(base_sample.get("reservoir_seed")) is not int
+        or base_sample["reservoir_seed"] < 0
+    ):
+        raise ValueError("perturbation base reservoir seed is invalid")
 
     operators = protocol.get("operators")
     if not isinstance(operators, list):
@@ -331,6 +339,12 @@ def validate_protocol(protocol: dict[str, Any]) -> None:
         operator_id = operator["operator_id"]
         for field in ("name", "layer", "mutation", "expected_seqspec_check"):
             required_string(operator, field)
+        if operator["expected_seqspec_check"] not in {
+            "pass",
+            "failure",
+            "not_applicable",
+        }:
+            raise ValueError(f"{operator_id}: seqspec check outcome is invalid")
         if operator.get("stochastic") is not operator_id.startswith("D"):
             raise ValueError(f"{operator_id}: stochastic classification differs")
         variants = operator.get("variants")
@@ -595,10 +609,20 @@ def operator_target(
     first = profiles[0]
     if operator_id == "S01":
         variants = ["unexpected_name"]
-        if ambiguous_input_available(context["reads"]):
+        ambiguous_basename = find_ambiguous_input_name(context["reads"])
+        if ambiguous_basename is not None:
             variants.append("ambiguous_name")
         return applicable_target(
-            variants, profile_target([first], []), "selected FASTQ available"
+            variants,
+            profile_target(
+                [first],
+                [],
+                {
+                    "ambiguous_basename": ambiguous_basename or "",
+                    "unexpected_basename": "seqcheck_unexpected_input.fastq.gz",
+                },
+            ),
+            "selected FASTQ available",
         )
     if operator_id in {"S02", "S03"}:
         if len(profiles) < 2:
@@ -653,10 +677,15 @@ def operator_target(
         )
     if operator_id == "S06":
         selected = select_profile_region(
-            profiles, concrete_fixed, require_non_palindromic=True
+            profiles,
+            concrete_fixed,
+            require_non_palindromic=True,
+            profile_predicate=lambda profile: strand_flip_supported(profile, leaves),
         )
         if selected is None:
-            return inapplicable("no projected non-palindromic fixed region")
+            return inapplicable(
+                "no read has opposite-strand range and a projected non-palindromic fixed region"
+            )
         profile, region = selected
         variant = "pos_to_neg" if profile["read"]["strand"] == "pos" else "neg_to_pos"
         return applicable_target(
@@ -672,6 +701,7 @@ def operator_target(
                     for leaf in leaves
                     if concrete_fixed(leaf)
                     and leaf["region_id"] != profile["read"]["primer_id"]
+                    and primer_anchor_supported(profile, leaves, leaf)
                 ),
                 key=lambda value: value["region_id"],
             )
@@ -688,7 +718,9 @@ def operator_target(
                     ),
                     "alternate fixed scannable primer is available",
                 )
-        return inapplicable("no alternate fixed scannable primer")
+        return inapplicable(
+            "no alternate fixed primer preserves the read sequence-able range"
+        )
     if operator_id == "S08":
         selected = select_profile_region(
             profiles, concrete_fixed, require_non_palindromic=True
@@ -781,7 +813,12 @@ def select_boundary(
                 continue
             for donor, direction in ((left, "left_to_right"), (right, "right_to_left")):
                 donor_len = donor["stop"] - donor["start"]
-                deltas = [delta for delta in (1, 4, 8) if donor_len > delta]
+                donor_min_len = strict_int(donor.get("min_len"), "region min_len")
+                deltas = [
+                    delta
+                    for delta in (1, 4, 8)
+                    if donor_len > delta and donor_min_len > delta
+                ]
                 if deltas:
                     candidates.append(
                         (profile, left, right, direction, deltas, donor_len)
@@ -809,9 +846,12 @@ def select_profile_region(
     predicate: Any,
     *,
     require_non_palindromic: bool = False,
+    profile_predicate: Any = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
     candidates = []
     for profile in profiles:
+        if profile_predicate is not None and not profile_predicate(profile):
+            continue
         for region in profile["projected"]:
             if predicate(region) and (
                 not require_non_palindromic or non_palindromic(region)
@@ -860,36 +900,107 @@ def concrete_fixed(region: dict[str, Any]) -> bool:
     )
 
 
+def strand_flip_supported(
+    profile: dict[str, Any], leaves: list[dict[str, Any]]
+) -> bool:
+    primer_id = profile["read"]["primer_id"]
+    positions = [
+        index for index, leaf in enumerate(leaves) if leaf["region_id"] == primer_id
+    ]
+    if len(positions) != 1:
+        return False
+    primer_index = positions[0]
+    strand = profile["read"]["strand"]
+    opposite_leaves = (
+        leaves[:primer_index] if strand == "pos" else leaves[primer_index + 1 :]
+    )
+    available = sum(
+        strict_int(leaf.get("max_len"), "region max_len") for leaf in opposite_leaves
+    )
+    return available >= strict_int(profile["read"].get("max_len"), "read max_len")
+
+
+def primer_anchor_supported(
+    profile: dict[str, Any],
+    leaves: list[dict[str, Any]],
+    primer: dict[str, Any],
+) -> bool:
+    positions = [
+        index
+        for index, leaf in enumerate(leaves)
+        if leaf["region_id"] == primer["region_id"]
+    ]
+    if len(positions) != 1:
+        return False
+    primer_index = positions[0]
+    strand = profile["read"]["strand"]
+    sequenceable = (
+        leaves[primer_index + 1 :] if strand == "pos" else leaves[:primer_index]
+    )
+    available = sum(
+        strict_int(leaf.get("max_len"), "region max_len") for leaf in sequenceable
+    )
+    return available >= strict_int(profile["read"].get("max_len"), "read max_len")
+
+
 def non_palindromic(region: dict[str, Any]) -> bool:
     sequence = str(region.get("sequence", "")).upper()
     return sequence != reverse_complement(sequence)
 
 
-def ambiguous_input_available(reads: dict[str, dict[str, Any]]) -> bool:
-    exact_names: dict[tuple[int, str], set[str]] = defaultdict(set)
-    normalized_names: dict[str, set[str]] = defaultdict(set)
+def find_ambiguous_input_name(reads: dict[str, dict[str, Any]]) -> str | None:
+    possible_names = set()
     for read_id, read in reads.items():
+        possible_names.add(read_id)
+        possible_names.add(normalize_fastq_name(read_id))
         for file in read.get("files", []):
             if not isinstance(file, dict):
                 continue
             url_basename = Path(str(file.get("url", ""))).name
-            for rank, field in enumerate(("file_id", "filename")):
-                name = str(file.get(field, "")).strip()
-                if name:
-                    exact_names[(rank, name)].add(read_id)
-            if url_basename:
-                exact_names[(2, url_basename)].add(read_id)
             for name in (
                 str(file.get("file_id", "")).strip(),
                 str(file.get("filename", "")).strip(),
                 url_basename,
             ):
                 if name:
-                    normalized_names[normalize_fastq_name(name)].add(read_id)
-        normalized_names[normalize_fastq_name(read_id)].add(read_id)
-    return any(len(values) > 1 for values in exact_names.values()) or any(
-        len(values) > 1 for values in normalized_names.values()
-    )
+                    possible_names.add(name)
+                    possible_names.add(normalize_fastq_name(name))
+    candidates = []
+    for basename in sorted(name for name in possible_names if name):
+        ranked = input_match_ranks(reads, basename)
+        if not ranked:
+            continue
+        best_rank = min(ranked.values())
+        if sum(rank == best_rank for rank in ranked.values()) > 1:
+            candidates.append((best_rank, basename))
+    return min(candidates)[1] if candidates else None
+
+
+def input_match_ranks(
+    reads: dict[str, dict[str, Any]], basename: str
+) -> dict[str, int]:
+    result = {}
+    normalized = normalize_fastq_name(basename)
+    for read_id, read in reads.items():
+        ranks = []
+        for file in read.get("files", []):
+            if not isinstance(file, dict):
+                continue
+            names = (
+                str(file.get("file_id", "")).strip(),
+                str(file.get("filename", "")).strip(),
+                Path(str(file.get("url", ""))).name,
+            )
+            ranks.extend(rank for rank, name in enumerate(names) if name == basename)
+            if any(name and normalize_fastq_name(name) == normalized for name in names):
+                ranks.append(4)
+        if read_id == basename:
+            ranks.append(3)
+        if normalize_fastq_name(read_id) == normalized:
+            ranks.append(5)
+        if ranks:
+            result[read_id] = min(ranks)
+    return result
 
 
 def normalize_fastq_name(value: str) -> str:

@@ -384,6 +384,9 @@ Each spec mutation must also declare whether `seqspec check` is expected to pass
 The primary read-versus-spec benchmark uses internally valid-but-wrong specs.
 Every generated spec is checked before seqcheck runs, and a mutation is excluded
 from that primary analysis if its observed validity does not match its manifest.
+S10 is an expected `seqspec check` failure because the declared local resource
+is deliberately absent. It tests structured missing-resource handling and is
+reported outside the internally-valid-but-wrong primary subset.
 
 | Id | Perturbation | Target signal |
 | --- | --- | --- |

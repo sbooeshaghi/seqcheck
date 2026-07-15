@@ -120,3 +120,23 @@ resource identity needed by the perturbation executor. Each inapplicable row
 records a reason. The inventory is usable only when
 `validation/perturbation_cases.json` reports `valid: true` and all selected
 variants are declared in `protocol/perturbations.json`.
+
+Materialize conditions from that inventory and the retained sampling-study
+matrices only after the sampling policy is frozen:
+
+```bash
+python3 scripts/materialize_perturbations.py \
+  --perturbation-inventory experiments/paper/runs/<run-id>/perturbation-inventory/manifests/perturbation_inventory.json \
+  --sampling-study experiments/paper/runs/<run-id>/sampling-calibration/manifests/study.json \
+  --sampling-policy experiments/paper/runs/<run-id>/sampling-analysis/policy/sampling_policy.json \
+  --perturbation-protocol experiments/paper/protocol/perturbations.json \
+  --seqspec-bin ../seqspec/target/release/seqspec \
+  --yq-bin "$(command -v yq)" \
+  --output-root experiments/paper/runs/<run-id>/perturbations
+```
+
+The materializer reuses the frozen prefix or reservoir sample without another
+source traversal. It hashes every generated spec, FASTQ, selected-record list,
+and bundled local resource. A stochastic fraction is generated only when it
+maps to an integer record count. `validation/materialization.json` must report
+`valid: true` before seqcheck execution begins.

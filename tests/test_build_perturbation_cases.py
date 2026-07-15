@@ -231,6 +231,53 @@ def create_inputs(root: Path) -> dict[str, Path]:
 
 
 class BuildPerturbationCasesTests(unittest.TestCase):
+    def test_ambiguous_input_name_matches_at_same_priority(self) -> None:
+        reads = {
+            "read_a": {
+                "files": [
+                    {
+                        "file_id": "shared.fastq",
+                        "filename": "a.fastq",
+                        "url": "a.fastq",
+                    }
+                ]
+            },
+            "read_b": {
+                "files": [
+                    {
+                        "file_id": "shared.fastq",
+                        "filename": "b.fastq",
+                        "url": "b.fastq",
+                    }
+                ]
+            },
+        }
+
+        self.assertEqual(MODULE.find_ambiguous_input_name(reads), "shared.fastq")
+
+    def test_boundary_shift_respects_declared_minimum_length(self) -> None:
+        profile = {
+            "case": {"selection_role": "primary", "fastq_accession": "FASTQ1"},
+            "projected": [
+                {
+                    "region_id": "variable",
+                    "sequence_type": "random",
+                    "min_len": 1,
+                    "start": 0,
+                    "stop": 10,
+                },
+                {
+                    "region_id": "fixed",
+                    "sequence_type": "fixed",
+                    "min_len": 1,
+                    "start": 10,
+                    "stop": 11,
+                },
+            ],
+        }
+
+        self.assertIsNone(MODULE.select_boundary([profile]))
+
     def test_builder_inventories_applicable_targets_deterministically(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -262,16 +309,17 @@ class BuildPerturbationCasesTests(unittest.TestCase):
         self.assertTrue(first["valid"])
         self.assertTrue(validation["valid"])
         self.assertEqual(validation["counts"]["records"], 14)
-        self.assertEqual(validation["counts"]["applicable"], 12)
+        self.assertEqual(validation["counts"]["applicable"], 10)
         self.assertEqual(len(rows), 14)
         self.assertFalse(by_operator["S02"]["applicable"])
         self.assertFalse(by_operator["S03"]["applicable"])
+        self.assertFalse(by_operator["S06"]["applicable"])
+        self.assertFalse(by_operator["S07"]["applicable"])
         self.assertEqual(by_operator["S01"]["variants"], ["unexpected_name"])
         self.assertEqual(by_operator["S05"]["variants"], ["shift_1"])
         self.assertEqual(
             by_operator["S05"]["target"]["region_ids"], ["barcode", "linker"]
         )
-        self.assertEqual(by_operator["S06"]["target"]["region_ids"], ["linker"])
         self.assertEqual(by_operator["S09"]["target"]["region_ids"], ["barcode"])
         self.assertEqual(by_operator["D01"]["target"]["region_ids"], ["cdna"])
         self.assertEqual(by_operator["D04"]["target"]["region_ids"], ["primer"])

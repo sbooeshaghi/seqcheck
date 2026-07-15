@@ -23,6 +23,10 @@
     ],
     "selection_method": "hash_ranked_record_ids"
   },
+  "base_sample": {
+    "require_frozen_sampling_policy": true,
+    "reservoir_seed": 17
+  },
   "operators": [
     {
       "operator_id": "S01",
@@ -216,6 +220,7 @@
       "applicability": {
         "required": [
           "selected_read_strand_is_pos_or_neg",
+          "opposite_strand_sequenceable_range_supports_read",
           "projected_non_palindromic_fixed_region"
         ]
       },
@@ -251,7 +256,8 @@
       "applicability": {
         "required": [
           "selected_read",
-          "different_fixed_scannable_region_in_modality"
+          "different_fixed_scannable_region_in_modality",
+          "replacement_primer_sequenceable_range_supports_read"
         ]
       },
       "mutation": "point_one_reads_primer_id_to_a_different_fixed_scannable_region",
@@ -368,7 +374,7 @@
         ]
       },
       "mutation": "materialize_the_spec_without_the_declared_local_onlist_resource",
-      "expected_seqspec_check": "pass",
+      "expected_seqspec_check": "failure",
       "target": {
         "process_outcome": "success",
         "checks": [
