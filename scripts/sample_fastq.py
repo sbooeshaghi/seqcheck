@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import random
-import re
 import subprocess
 import sys
 import tempfile
@@ -129,6 +128,7 @@ def sample_fastqs(
 
     accessions = aligned_metadata(fastq_accessions or [], len(inputs), "accession")
     seqspec_read_ids = aligned_metadata(read_ids or [], len(inputs), "read id")
+    filenames = output_filenames(inputs, accessions)
     output_root.mkdir(parents=True, exist_ok=True)
 
     with ExitStack() as stack:
@@ -162,7 +162,7 @@ def sample_fastqs(
     with tempfile.TemporaryDirectory(prefix=".sample-", dir=output_root) as tmpdir:
         temporary_root = Path(tmpdir)
         for index, records in enumerate(selected):
-            filename = output_filename(index, inputs[index], accessions[index])
+            filename = filenames[index]
             temporary_path = temporary_root / filename
             write_fastq_gzip(temporary_path, records)
             final_path = output_root / filename
@@ -200,10 +200,7 @@ def sample_fastqs(
     }
     identity_manifest = {
         **stable_manifest,
-        "inputs": [
-            identity_input_row(row)
-            for row in output_rows
-        ],
+        "inputs": [identity_input_row(row) for row in output_rows],
         "sampler": {
             "version": stable_manifest["sampler"]["version"],
             "script_sha256": stable_manifest["sampler"]["script_sha256"],
@@ -237,9 +234,7 @@ def aligned_metadata(values: list[str], size: int, label: str) -> list[str]:
 def identity_input_row(row: dict[str, Any]) -> dict[str, Any]:
     identity = {key: value for key, value in row.items() if key != "output_path"}
     identity["access"] = {
-        key: value
-        for key, value in row["access"].items()
-        if key != "retrieved_at"
+        key: value for key, value in row["access"].items() if key != "retrieved_at"
     }
     return identity
 
@@ -289,9 +284,7 @@ def open_source(source: str) -> Iterator[tuple[BinaryIO, dict[str, Any]]]:
             raw.close()
 
 
-def iter_fastq(
-    reader: BinaryIO, source: str, digest: Any
-) -> Iterator[FastqRecord]:
+def iter_fastq(reader: BinaryIO, source: str, digest: Any) -> Iterator[FastqRecord]:
     record_index = 0
     while True:
         header = reader.readline()
@@ -305,9 +298,13 @@ def iter_fastq(
         if not sequence or not separator or not quality:
             raise SampleError(f"{source}: incomplete FASTQ record {record_index}")
         if not header.startswith(b"@"):
-            raise SampleError(f"{source}: record {record_index} header does not start with @")
+            raise SampleError(
+                f"{source}: record {record_index} header does not start with @"
+            )
         if not separator.startswith(b"+"):
-            raise SampleError(f"{source}: record {record_index} separator does not start with +")
+            raise SampleError(
+                f"{source}: record {record_index} separator does not start with +"
+            )
         if len(strip_newline(sequence)) != len(strip_newline(quality)):
             raise SampleError(
                 f"{source}: record {record_index} sequence and quality lengths differ"
@@ -374,7 +371,9 @@ def sample_synchronized(
             exhausted = True
             break
         if any(record is sentinel for record in group):
-            raise SampleError("synchronized FASTQ inputs contain different record counts")
+            raise SampleError(
+                "synchronized FASTQ inputs contain different record counts"
+            )
 
         records = tuple(record for record in group if record is not sentinel)
         names = [read_name(record) for record in records]
@@ -423,11 +422,32 @@ def update_reservoir(
 
 def output_filename(index: int, source: str, accession: str) -> str:
     source_name = Path(urllib.parse.urlparse(source).path).name
-    label = accession or source_name or f"input-{index + 1}"
-    label = re.sub(r"(?:\.fastq|\.fq)?\.gz$", "", label, flags=re.IGNORECASE)
-    label = re.sub(r"\.(?:fastq|fq)$", "", label, flags=re.IGNORECASE)
-    safe_label = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("._")
-    return f"{index + 1:02d}_{safe_label or f'input-{index + 1}'}.sample.fastq.gz"
+    label = Path(accession).name if accession else source_name
+    label = strip_fastq_suffix(label) or f"input-{index + 1}"
+    return f"{label}.fastq.gz"
+
+
+def strip_fastq_suffix(value: str) -> str:
+    lowered = value.lower()
+    for suffix in (".fastq.gz", ".fq.gz", ".fastq", ".fq"):
+        if lowered.endswith(suffix):
+            return value[: -len(suffix)]
+    return value
+
+
+def output_filenames(inputs: list[str], accessions: list[str]) -> list[str]:
+    filenames = [
+        output_filename(index, source, accessions[index])
+        for index, source in enumerate(inputs)
+    ]
+    duplicates = sorted(
+        filename for filename in set(filenames) if filenames.count(filename) > 1
+    )
+    if duplicates:
+        raise SampleError(
+            "sample output filenames are not unique: " + ", ".join(duplicates)
+        )
+    return filenames
 
 
 def write_fastq_gzip(path: Path, records: list[FastqRecord]) -> None:

@@ -121,6 +121,7 @@ def sample_fastq_matrix(
         fastq_accessions or [], len(inputs), "accession"
     )
     seqspec_read_ids = sampler.aligned_metadata(read_ids or [], len(inputs), "read id")
+    filenames = sampler.output_filenames(inputs, accessions)
 
     with ExitStack() as stack:
         opened = [stack.enter_context(sampler.open_source(source)) for source in inputs]
@@ -180,10 +181,8 @@ def sample_fastq_matrix(
             method, n_reads, seed = condition
             relative_root = condition_directory(condition)
             output_rows = []
-            for input_index, source in enumerate(inputs):
-                relative_path = relative_root / sampler.output_filename(
-                    input_index, source, accessions[input_index]
-                )
+            for input_index in range(len(inputs)):
+                relative_path = relative_root / filenames[input_index]
                 temporary_path = temporary_root / relative_path
                 temporary_path.parent.mkdir(parents=True, exist_ok=True)
                 records = selected[input_index][condition]

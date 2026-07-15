@@ -88,6 +88,7 @@ class SampleFastqTests(unittest.TestCase):
         self.assertEqual(observed, "".join(original.splitlines(keepends=True)[:8]))
         self.assertEqual(row["records_streamed"], 2)
         self.assertEqual(row["records_selected"], 2)
+        self.assertEqual(Path(row["output_path"]).name, "reads.fastq.gz")
         self.assertFalse(row["complete_stream_consumed"])
         self.assertEqual(manifest["sampling_seed"], None)
         self.assertEqual(row["source_uncompressed_sha256"], "")
@@ -165,7 +166,8 @@ class SampleFastqTests(unittest.TestCase):
             read2 = root / "R2.fastq"
             write_fastq(read1, 4, mate=1)
             read2.write_text(
-                fastq_text(2, mate=2) + fastq_text(1, mate=2).replace("read-0", "wrong"),
+                fastq_text(2, mate=2)
+                + fastq_text(1, mate=2).replace("read-0", "wrong"),
                 encoding="ascii",
             )
 
@@ -193,6 +195,25 @@ class SampleFastqTests(unittest.TestCase):
                     n_reads=1,
                     seed=0,
                     synchronize_mates=False,
+                )
+
+    def test_sampling_rejects_duplicate_output_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            first = root / "first.fastq"
+            second = root / "second.fastq"
+            write_fastq(first, 2)
+            write_fastq(second, 2)
+
+            with self.assertRaisesRegex(MODULE.SampleError, "not unique"):
+                self.sample(
+                    inputs=[str(first), str(second)],
+                    output_root=root / "sample",
+                    method="reservoir",
+                    n_reads=1,
+                    seed=0,
+                    synchronize_mates=False,
+                    fastq_accessions=["same", "same"],
                 )
 
     def test_cli_writes_manifest_with_study_metadata(self) -> None:

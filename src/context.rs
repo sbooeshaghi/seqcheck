@@ -388,6 +388,35 @@ fn resolve_candidate(spec: &Assay, modality: &str, basename: &str) -> Result<Can
         }
     }
 
+    let normalized_basename = normalize_fastq_name(basename);
+    for read in spec.get_seqspec(modality) {
+        for file in &read.files {
+            let url_basename = Path::new(&file.url)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if [file.file_id.as_str(), file.filename.as_str(), url_basename]
+                .iter()
+                .any(|value| normalize_fastq_name(value) == normalized_basename)
+            {
+                candidates.push(Candidate {
+                    rank: 4,
+                    read: read.clone(),
+                    matched_file: Some(file.clone()),
+                    matched_by: "normalized_fastq_name",
+                });
+            }
+        }
+        if normalize_fastq_name(&read.read_id) == normalized_basename {
+            candidates.push(Candidate {
+                rank: 5,
+                read: read.clone(),
+                matched_file: None,
+                matched_by: "normalized_read_id",
+            });
+        }
+    }
+
     candidates.sort_by(|left, right| {
         left.rank
             .cmp(&right.rank)
@@ -396,7 +425,7 @@ fn resolve_candidate(spec: &Assay, modality: &str, basename: &str) -> Result<Can
 
     let Some(best) = candidates.first().cloned() else {
         bail!(
-            "could not match '{}' to any read in modality '{}'; tried file_id, filename, url basename, then read_id",
+            "could not match '{}' to any read in modality '{}'; tried exact and normalized file_id, filename, url basename, and read_id",
             basename,
             modality
         );
@@ -414,6 +443,24 @@ fn resolve_candidate(spec: &Assay, modality: &str, basename: &str) -> Result<Can
     }
 
     Ok(best)
+}
+
+fn normalize_fastq_name(value: &str) -> &str {
+    let lowered = value.to_ascii_lowercase();
+    let without_compression_len = if lowered.ends_with(".gz") {
+        value.len() - ".gz".len()
+    } else {
+        value.len()
+    };
+    let lowered = &lowered[..without_compression_len];
+    let suffix_len = if lowered.ends_with(".fastq") {
+        ".fastq".len()
+    } else if lowered.ends_with(".fq") {
+        ".fq".len()
+    } else {
+        0
+    };
+    &value[..without_compression_len - suffix_len]
 }
 
 fn onlist_source(spec_base: Option<&Path>, onlist: &Onlist) -> Result<String> {
@@ -1045,6 +1092,13 @@ mod tests {
         let candidate = resolve_candidate(&sample_assay(), "rna", "rna_R1").unwrap();
         assert_eq!(candidate.read.read_id, "rna_R1");
         assert_eq!(candidate.matched_by, "read_id");
+    }
+
+    #[test]
+    fn test_resolve_candidate_matches_normalized_fastq_name() {
+        let candidate = resolve_candidate(&sample_assay(), "rna", "R1.fastq").unwrap();
+        assert_eq!(candidate.read.read_id, "rna_R1");
+        assert_eq!(candidate.matched_by, "normalized_fastq_name");
     }
 
     #[test]

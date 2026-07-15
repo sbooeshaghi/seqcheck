@@ -112,6 +112,9 @@ class SampleFastqMatrixTests(unittest.TestCase):
             ]
 
             self.assertTrue(all(path.is_file() for path in output_paths))
+            self.assertTrue(
+                all(path.name == "IGVFFI0001TEST.fastq.gz" for path in output_paths)
+            )
             persisted = json.loads(
                 Path(manifest["manifest_path"]).read_text(encoding="utf-8")
             )

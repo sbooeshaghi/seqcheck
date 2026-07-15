@@ -1,5 +1,8 @@
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use serde_json::Value;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -171,6 +174,38 @@ fn test_check_json_aggregates_core_checks() {
     assert!(checks.contains(&"random"));
     assert!(!checks.contains(&"cut"));
     assert!(!checks.contains(&"hist"));
+}
+
+#[test]
+fn test_check_json_resolves_sampled_gzip_suffix() {
+    let root = Path::new(&temp_path("dir")).with_extension("");
+    fs::create_dir_all(&root).unwrap();
+    let fastq = root.join("synthetic_R1.fastq.gz");
+    let source = fs::read("tests/fixtures/synthetic/fastqs/synthetic_R1.fastq").unwrap();
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder.write_all(&source).unwrap();
+    fs::write(&fastq, encoder.finish().unwrap()).unwrap();
+
+    let parsed = parse_json(&[
+        "check",
+        "--format",
+        "json",
+        "-s",
+        "tests/fixtures/synthetic/spec_0_5.yaml",
+        "-m",
+        "rna",
+        "-n",
+        "0",
+        fastq.to_str().unwrap(),
+    ]);
+    let input_check = find_result(&parsed, |result| result["check"] == "input_check");
+    assert!(has_assessment(input_check, "all_expected_files_matched"));
+    assert_eq!(
+        metric_value(input_check, "observed", "matched_inputs")[0]["matched_by"],
+        "normalized_fastq_name"
+    );
+
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
