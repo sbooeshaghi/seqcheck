@@ -39,6 +39,7 @@
       "term_delimiter": ";",
       "context_sufficient_values": ["yes", "no"],
       "confidence_values": ["high", "medium", "low"],
+      "reviewable_term_statuses": ["active", "experimental"],
       "unknown_term_must_be_exclusive": true,
       "insufficient_context_requires_unknown": true
     },

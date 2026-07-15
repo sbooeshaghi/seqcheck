@@ -93,6 +93,7 @@ def registry() -> dict[str, object]:
             "does_not_mean": [f"Not another role for {label}."],
             "aliases": ["hidden legacy hint"],
         }
+    terms["RGN:technical:index7"]["status"] = "experimental"
     return {
         "ontology_id": "seqspec-region-ontology",
         "roles": roles,

@@ -477,7 +477,9 @@ def load_source(
     protocol = runtime.load_json(protocol_path)
     review_contract = validate_review_protocol(protocol, len(sample_rows))
     registry = load_yaml_json(registry_path, yq_bin, timeout_seconds)
-    term_reference, term_order = build_term_reference(registry)
+    term_reference, term_order = build_term_reference(
+        registry, review_contract["reviewable_term_statuses"]
+    )
     declared_terms = set(term_order)
     for row in sample_rows:
         terms = split_terms(row["ontology_terms"])
@@ -543,19 +545,23 @@ def validate_review_protocol(
         raise ValueError("ontology insufficient-context policy is not enabled")
     context_values = response.get("context_sufficient_values")
     confidence_values = response.get("confidence_values")
+    term_statuses = response.get("reviewable_term_statuses")
     if context_values != ["yes", "no"]:
         raise ValueError("ontology context response values are invalid")
     if confidence_values != ["high", "medium", "low"]:
         raise ValueError("ontology confidence response values are invalid")
+    if term_statuses != ["active", "experimental"]:
+        raise ValueError("ontology reviewable term statuses are invalid")
     return {
         "package_seeds": {1: seeds["reviewer_1"], 2: seeds["reviewer_2"]},
         "context_values": set(context_values),
         "confidence_values": set(confidence_values),
+        "reviewable_term_statuses": set(term_statuses),
     }
 
 
 def build_term_reference(
-    registry: dict[str, Any],
+    registry: dict[str, Any], reviewable_statuses: set[str]
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if registry.get("ontology_id") != "seqspec-region-ontology":
         raise ValueError("ontology registry id is invalid")
@@ -566,7 +572,10 @@ def build_term_reference(
     rows = []
     order = []
     for term, value in terms.items():
-        if not isinstance(value, dict) or value.get("status") != "active":
+        if (
+            not isinstance(value, dict)
+            or value.get("status") not in reviewable_statuses
+        ):
             continue
         role = str(value.get("role", ""))
         if role not in roles:
