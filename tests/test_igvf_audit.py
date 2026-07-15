@@ -267,6 +267,7 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertEqual(run.requested_reads_total, 10000)
         self.assertEqual(run.supplied_fastq_count, 1)
         self.assertEqual(run.sampled_record_count, 1)
+        self.assertEqual(run.access_class, "public")
         self.assertEqual(run.study_run_id, "study-1")
         self.assertEqual(len(diagnostics), 3)
         self.assertEqual(diagnostics[1].assessment_code, "length_out_of_range")
@@ -336,6 +337,7 @@ class IgvfAuditTests(unittest.TestCase):
                 "requested_reads_total": 20000,
                 "sampled_record_count": 0,
                 "controlled_access": True,
+                "access_class": "controlled",
             },
         )
 
@@ -470,6 +472,36 @@ class IgvfAuditTests(unittest.TestCase):
                     },
                 ]
             )
+
+    def test_access_and_failure_categories_are_closed_and_explicit(self) -> None:
+        public = MODULE.SequenceFileRecord("P", "/p", False, ["R1"])
+        controlled = MODULE.SequenceFileRecord("C", "/c", True, ["R2"])
+
+        self.assertEqual(MODULE.access_class_for_records([public]), "public")
+        self.assertEqual(
+            MODULE.access_class_for_records([controlled]), "controlled"
+        )
+        self.assertEqual(
+            MODULE.access_class_for_records([public, controlled]), "mixed"
+        )
+        self.assertEqual(
+            MODULE.classify_failure_category(
+                "seqcheck", "seqcheck_error", "HTTP 503 from remote"
+            ),
+            "transport",
+        )
+        self.assertEqual(
+            MODULE.classify_failure_category(
+                "resolve_fastqs", "missing_credentials", "credentials required"
+            ),
+            "authentication",
+        )
+        self.assertEqual(
+            MODULE.classify_failure_category(
+                "worker", "unhandled_exception", "unexpected"
+            ),
+            "unclassified",
+        )
 
     def test_sampled_record_count_deduplicates_metrics_within_each_file(self) -> None:
         report = {
@@ -712,6 +744,30 @@ class IgvfAuditTests(unittest.TestCase):
                 missing_version["checks"]["completed_versions_recorded"]
             )
 
+            unclassified = MODULE.reconcile_outputs(
+                output_root,
+                context,
+                [record],
+                [run],
+                diagnostics,
+                metrics,
+                [
+                    MODULE.build_failure(
+                        context.run_id,
+                        record,
+                        modality="",
+                        raw_seqspec_version="",
+                        normalized_seqspec_version="",
+                        stage="worker",
+                        reason="unhandled_exception",
+                        message="unexpected",
+                    )
+                ],
+            )
+            self.assertFalse(
+                unclassified["checks"]["unclassified_failures_absent"]
+            )
+
             orphan = output_root / "reports" / "orphan.json"
             orphan.write_text("{}", encoding="utf-8")
             with_orphan = MODULE.reconcile_outputs(
@@ -761,6 +817,7 @@ class IgvfAuditTests(unittest.TestCase):
                 expected_fastq_count=1,
                 supplied_fastq_count=1,
                 controlled_access=False,
+                access_class="public",
                 report_path="/tmp/a.json",
                 run_status="completed",
                 pass_count=2,

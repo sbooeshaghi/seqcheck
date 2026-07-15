@@ -33,6 +33,16 @@ AUDIT_SCHEMA_VERSION = "0.3.0"
 CURRENT_SEQSPEC_VERSION = "0.5.0"
 SAMPLING_METHOD = "prefix"
 ONTOLOGY_TERM_PATTERN = re.compile(r"RGN:[A-Za-z0-9_]+:[A-Za-z0-9_]+")
+ACCESS_CLASSES = {"public", "controlled", "mixed", "unknown"}
+FAILURE_CATEGORIES = {
+    "portal",
+    "transport",
+    "authentication",
+    "specification",
+    "tool",
+    "eligibility",
+    "unclassified",
+}
 
 
 @dataclass(frozen=True)
@@ -83,6 +93,7 @@ class RunRecord:
     expected_fastq_count: int
     supplied_fastq_count: int
     controlled_access: bool
+    access_class: str
     report_path: str
     run_status: str
     pass_count: int
@@ -117,6 +128,7 @@ class DiagnosticRecord:
     ontology_terms: str
     sequence_types: str
     region_annotations_json: str
+    access_class: str
 
 
 @dataclass(frozen=True)
@@ -143,6 +155,7 @@ class MetricRecord:
     ontology_terms: str
     sequence_types: str
     region_annotations_json: str
+    access_class: str
     metric_side: str
     metric_id: str
     metric_name: str
@@ -169,6 +182,9 @@ class FailureRecord:
     stage: str
     reason: str
     message: str
+    access_class: str = "unknown"
+    failure_category: str = "tool"
+    attempt_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -364,13 +380,14 @@ def main() -> int:
                 args.portal_root,
                 mpl_dir,
                 audit_context,
-            ): record.accession
+            ): record
             for record in configurations
         }
 
         completed_configurations = 0
         for future in as_completed(future_map):
-            accession = future_map[future]
+            record = future_map[future]
+            accession = record.accession
             completed_configurations += 1
             remaining_configurations = total_configurations - completed_configurations
             try:
@@ -385,17 +402,10 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 failures.append(
-                    FailureRecord(
-                        study_run_id=audit_context.run_id,
-                        configuration_accession=accession,
+                    build_failure(
+                        audit_context.run_id,
+                        record,
                         modality="",
-                        lab="",
-                        submitted_by="",
-                        award_component="",
-                        file_set_accession="",
-                        assay_term="",
-                        preferred_assay_titles="",
-                        aliases="",
                         raw_seqspec_version="",
                         normalized_seqspec_version="",
                         stage="worker",
@@ -500,6 +510,7 @@ def process_configuration(
         for accession in extract_accessions(record.seqspec_of)
         if accession in sequence_files
     ]
+    configuration_access_class = access_class_for_records(linked_fastqs)
 
     if not linked_fastqs:
         failures.append(
@@ -512,6 +523,7 @@ def process_configuration(
                 stage="sequence_files",
                 reason="no_fastq_sequence_files",
                 message="Configuration file has no linked FASTQ sequence files.",
+                access_class=configuration_access_class,
             )
         )
         return runs, diagnostics, metrics, failures
@@ -540,6 +552,7 @@ def process_configuration(
                     message=message,
                 ),
                 message=message,
+                access_class=configuration_access_class,
             )
         )
         return runs, diagnostics, metrics, failures
@@ -568,6 +581,7 @@ def process_configuration(
                     message=message,
                 ),
                 message=message,
+                access_class=configuration_access_class,
             )
         )
         return runs, diagnostics, metrics, failures
@@ -583,6 +597,7 @@ def process_configuration(
                 stage="enumerate_modalities",
                 reason="no_modalities",
                 message="No modalities found in seqspec.",
+                access_class=configuration_access_class,
             )
         )
         return runs, diagnostics, metrics, failures
@@ -618,6 +633,7 @@ def process_configuration(
                         message=message,
                     ),
                     message=message,
+                    access_class=configuration_access_class,
                 )
             )
             continue
@@ -645,6 +661,7 @@ def process_configuration(
                         message=message,
                     ),
                     message=message,
+                    access_class=configuration_access_class,
                 )
             )
             continue
@@ -661,6 +678,7 @@ def process_configuration(
                     stage="enumerate_files",
                     reason="no_fastq_files_for_modality",
                     message=f"No FASTQ files found for modality '{modality}'.",
+                    access_class=configuration_access_class,
                 )
             )
             continue
@@ -668,6 +686,8 @@ def process_configuration(
         modality_sequence_records: list[SequenceFileRecord] = []
         fastq_urls: list[str] = []
         controlled_needed = False
+        resolved_for_access: list[SequenceFileRecord] = []
+        modality_access_class = configuration_access_class
 
         skip_reason = None
         skip_message = None
@@ -681,6 +701,9 @@ def process_configuration(
                     f"'{item.get('file_id') or item.get('filename')}'."
                 )
                 break
+
+            resolved_for_access.append(sequence_record)
+            modality_access_class = access_class_for_records(resolved_for_access)
 
             if sequence_record.controlled_access:
                 controlled_needed = True
@@ -711,6 +734,7 @@ def process_configuration(
                     stage="resolve_fastqs",
                     reason=skip_reason,
                     message=skip_message or "",
+                    access_class=modality_access_class,
                 )
             )
             continue
@@ -746,6 +770,7 @@ def process_configuration(
                     controlled_access=controlled_needed,
                     audit_context=audit_context,
                     cache_key=cache_key,
+                    access_class=modality_access_class,
                 )
                 report_path.write_text(
                     json.dumps(report, indent=2, sort_keys=False) + "\n",
@@ -764,6 +789,7 @@ def process_configuration(
                     controlled_access=controlled_needed,
                     run_status="cached",
                     region_annotations=region_annotations,
+                    access_class=modality_access_class,
                 )
                 runs.append(run_row)
                 diagnostics.extend(diagnostic_rows)
@@ -791,6 +817,7 @@ def process_configuration(
                 controlled_access=controlled_needed,
                 audit_context=audit_context,
                 cache_key=cache_key,
+                access_class=modality_access_class,
             )
             report_path.write_text(
                 json.dumps(report, indent=2, sort_keys=False) + "\n",
@@ -807,6 +834,7 @@ def process_configuration(
                     stage="seqcheck",
                     reason="seqcheck_error",
                     message=stderr_message(err),
+                    access_class=modality_access_class,
                 )
             )
             continue
@@ -821,6 +849,7 @@ def process_configuration(
                     stage="seqcheck",
                     reason="report_parse_error",
                     message=str(err),
+                    access_class=modality_access_class,
                 )
             )
             continue
@@ -838,6 +867,7 @@ def process_configuration(
             controlled_access=controlled_needed,
             run_status="completed",
             region_annotations=region_annotations,
+            access_class=modality_access_class,
         )
         runs.append(run_row)
         diagnostics.extend(diagnostic_rows)
@@ -1552,6 +1582,7 @@ def flatten_report(
     controlled_access: bool,
     run_status: str,
     region_annotations: dict[str, dict[str, Any]] | None = None,
+    access_class: str | None = None,
 ) -> tuple[RunRecord, list[DiagnosticRecord], list[MetricRecord]]:
     if expected_fastq_count <= 0:
         expected_fastq_count = infer_expected_fastq_count(report)
@@ -1573,6 +1604,9 @@ def flatten_report(
     sampling_method = str(audit_summary.get("sampling_method", SAMPLING_METHOD))
     sampling_seed = audit_summary.get("sampling_seed")
     sampled_record_count = infer_sampled_record_count(report)
+    resolved_access_class = access_class or (
+        "controlled" if controlled_access else "public"
+    )
 
     run = RunRecord(
         study_run_id=study_run_id,
@@ -1599,6 +1633,7 @@ def flatten_report(
         expected_fastq_count=expected_fastq_count,
         supplied_fastq_count=supplied_fastq_count,
         controlled_access=controlled_access,
+        access_class=resolved_access_class,
         report_path=str(report_path),
         run_status=run_status,
         pass_count=counts["pass"],
@@ -1643,6 +1678,7 @@ def flatten_report(
                     ontology_terms=ontology_terms,
                     sequence_types=sequence_types,
                     region_annotations_json=region_annotations_json,
+                    access_class=resolved_access_class,
                 )
             )
 
@@ -1673,6 +1709,7 @@ def flatten_report(
                         ontology_terms=ontology_terms,
                         sequence_types=sequence_types,
                         region_annotations_json=region_annotations_json,
+                        access_class=resolved_access_class,
                         metric_side=metric_side,
                         metric_id=str(metric.get("id", "")),
                         metric_name=str(metric.get("name", "")),
@@ -1774,9 +1811,13 @@ def annotate_report_summary(
     controlled_access: bool,
     audit_context: AuditContext,
     cache_key: str,
+    access_class: str | None = None,
 ) -> dict[str, Any]:
     requested_reads = int(report.get("meta", {}).get("requested_reads", 0))
     sampled_record_count = infer_sampled_record_count(report)
+    resolved_access_class = access_class or (
+        "controlled" if controlled_access else "public"
+    )
     report["audit_summary"] = {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
         "study_run_id": audit_context.run_id,
@@ -1799,6 +1840,7 @@ def annotate_report_summary(
         ),
         "sampled_record_count": sampled_record_count,
         "controlled_access": controlled_access,
+        "access_class": resolved_access_class,
     }
     return report
 
@@ -1821,7 +1863,10 @@ def build_failure(
     stage: str,
     reason: str,
     message: str,
+    access_class: str = "unknown",
+    attempt_count: int = 1,
 ) -> FailureRecord:
+    failure_category = classify_failure_category(stage, reason, message)
     return FailureRecord(
         study_run_id=study_run_id,
         configuration_accession=record.accession,
@@ -1838,7 +1883,65 @@ def build_failure(
         stage=stage,
         reason=reason,
         message=message,
+        access_class=access_class,
+        failure_category=failure_category,
+        attempt_count=attempt_count,
     )
+
+
+def classify_failure_category(stage: str, reason: str, message: str) -> str:
+    normalized = f"{reason} {message}".lower()
+    if reason == "unhandled_exception":
+        return "unclassified"
+    if reason == "controlled_fastq_skipped":
+        return "eligibility"
+    if reason == "missing_credentials" or any(
+        token in normalized
+        for token in ("unauthorized", "forbidden", "401", "403", "credential")
+    ):
+        return "authentication"
+    if any(
+        token in normalized
+        for token in (
+            "timed out",
+            "timeout",
+            "connection reset",
+            "connection refused",
+            "temporary failure",
+            "name or service not known",
+            "could not resolve host",
+            "http 500",
+            "http 502",
+            "http 503",
+            "http 504",
+        )
+    ):
+        return "transport"
+    if reason in {"no_fastq_sequence_files", "missing_fastq_metadata"}:
+        return "portal"
+    if (
+        stage.startswith("seqspec")
+        or stage.startswith("enumerate_")
+        or reason
+        in {
+            "malformed_seqspec_yaml",
+            "no_modalities",
+            "no_fastq_files_for_modality",
+        }
+    ):
+        return "specification"
+    return "tool"
+
+
+def access_class_for_records(records: list[SequenceFileRecord]) -> str:
+    values = {value.controlled_access for value in records}
+    if not values:
+        return "unknown"
+    if values == {False}:
+        return "public"
+    if values == {True}:
+        return "controlled"
+    return "mixed"
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -1884,6 +1987,12 @@ def reconcile_outputs(
     duplicate_run_keys = sorted(
         key for key, count in Counter(run_keys).items() if count > 1
     )
+    outcome_keys = [
+        (row.configuration_accession, row.modality) for row in [*runs, *failures]
+    ]
+    duplicate_outcome_keys = sorted(
+        key for key, count in Counter(outcome_keys).items() if count > 1
+    )
     catalog_reports = {Path(row.report_path).resolve() for row in runs}
     actual_reports = {
         path.resolve() for path in (output_root / "reports").glob("**/*.json")
@@ -1906,6 +2015,7 @@ def reconcile_outputs(
         if (
             summary.get("study_run_id") != audit_context.run_id
             or summary.get("cache_key") != run.cache_key
+            or summary.get("access_class") != run.access_class
             or not report_cache_matches(report, run.cache_key)
         ):
             report_identity_errors.append(str(path))
@@ -1944,6 +2054,7 @@ def reconcile_outputs(
     expected_assessment_count = sum(expected_assessments_by_report.values())
     expected_metric_count = sum(expected_metrics_by_report.values())
     known_cache_keys = {(row.report_path, row.cache_key) for row in runs}
+    access_class_by_report = {row.report_path: row.access_class for row in runs}
     flattened_identity_errors = [
         {
             "table": table,
@@ -1955,6 +2066,7 @@ def reconcile_outputs(
         for row in rows
         if row.study_run_id != audit_context.run_id
         or (row.report_path, row.cache_key) not in known_cache_keys
+        or row.access_class != access_class_by_report.get(row.report_path)
     ]
 
     checks = {
@@ -1962,6 +2074,16 @@ def reconcile_outputs(
             expected_configurations == observed_configurations
         ),
         "run_keys_unique": not duplicate_run_keys,
+        "outcome_keys_unique": not duplicate_outcome_keys,
+        "access_classes_valid": all(
+            row.access_class in ACCESS_CLASSES for row in [*runs, *failures]
+        ),
+        "failure_categories_valid": all(
+            row.failure_category in FAILURE_CATEGORIES for row in failures
+        ),
+        "unclassified_failures_absent": all(
+            row.failure_category != "unclassified" for row in failures
+        ),
         "catalog_reports_exist": not (catalog_reports - actual_reports),
         "no_orphan_reports": not (actual_reports - catalog_reports),
         "reports_parse": not report_parse_errors,
@@ -1993,6 +2115,15 @@ def reconcile_outputs(
             "observed_configurations": len(observed_configurations),
             "runs": len(runs),
             "failures": len(failures),
+            "runs_by_access_class": dict(
+                sorted(Counter(row.access_class for row in runs).items())
+            ),
+            "failures_by_access_class": dict(
+                sorted(Counter(row.access_class for row in failures).items())
+            ),
+            "failures_by_category": dict(
+                sorted(Counter(row.failure_category for row in failures).items())
+            ),
             "diagnostics": len(diagnostics),
             "expected_assessments": expected_assessment_count,
             "metrics": len(metrics),
@@ -2006,6 +2137,7 @@ def reconcile_outputs(
                 expected_configurations - observed_configurations
             ),
             "duplicate_run_keys": [list(key) for key in duplicate_run_keys],
+            "duplicate_outcome_keys": [list(key) for key in duplicate_outcome_keys],
             "missing_reports": sorted(str(path) for path in catalog_reports - actual_reports),
             "orphan_reports": sorted(str(path) for path in actual_reports - catalog_reports),
             "report_parse_errors": report_parse_errors,
