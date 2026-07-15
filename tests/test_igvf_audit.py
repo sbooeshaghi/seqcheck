@@ -49,6 +49,74 @@ class IgvfAuditTests(unittest.TestCase):
         )
 
     @classmethod
+    def portal_manifest(cls) -> dict[str, object]:
+        record = cls.configuration_record()
+        sequence = MODULE.SequenceFileRecord(
+            accession="IGVFFI0001TEST",
+            href="/sequence-files/IGVFFI0001TEST/@@download/test.fastq.gz",
+            controlled_access=False,
+            read_names=["Read1"],
+        )
+        value = {
+            "schema_version": "0.1.0",
+            "query": {
+                "api_root": "https://api.example.org/",
+                "portal_root": "https://example.org/",
+                "status": "released",
+                "upload_status": "validated",
+            },
+            "configurations": [dataclasses.asdict(record)],
+            "sequence_files": [dataclasses.asdict(sequence)],
+            "missing_linked_sequence_file_accessions": [],
+            "counts": {
+                "configurations": 1,
+                "linked_sequence_files": 1,
+                "missing_linked_sequence_files": 0,
+            },
+            "tools": {
+                "audit_runtime": {
+                    "version": "0.3.0",
+                    "path": "/tmp/igvf_audit.py",
+                    "sha256": "a" * 64,
+                    "python": "3.12.0",
+                },
+                "freezer": {
+                    "version": "0.1.0",
+                    "path": "/tmp/freeze_igvf_audit_portal.py",
+                    "sha256": "b" * 64,
+                    "python": "3.12.0",
+                },
+            },
+            "source": {"mode": "live"},
+            "retrieved_at": "2026-07-14T12:00:00+00:00",
+        }
+        return {
+            **value,
+            "portal_manifest_id": MODULE.sha256_json(
+                MODULE.portal_manifest_stable(value)
+            )[:16],
+        }
+
+    @staticmethod
+    def sampling_policy(method: str = "prefix") -> dict[str, object]:
+        stable = {
+            "schema_version": "0.1.0",
+            "study_run_id": "sampling-study",
+            "analysis_run_id": "sampling-analysis",
+            "frozen": True,
+            "default": {
+                "records_per_fastq": 10000,
+                "sampling_method": method,
+                "sampling_seed": 17 if method == "reservoir" else None,
+            },
+        }
+        return {
+            **stable,
+            "policy_id": MODULE.sha256_json(stable)[:16],
+            "created_at": "2026-07-14T12:00:00+00:00",
+        }
+
+    @classmethod
     def audit_context(cls, run_id: str = "study-1") -> object:
         return MODULE.AuditContext(
             run_id=run_id,
@@ -69,15 +137,87 @@ class IgvfAuditTests(unittest.TestCase):
 
     def test_select_requested_configurations_rejects_missing_accessions(self) -> None:
         record = self.configuration_record()
-        selected = MODULE.select_requested_configurations(
-            [record], [record.accession]
-        )
+        selected = MODULE.select_requested_configurations([record], [record.accession])
         self.assertEqual(selected, [record])
 
         with self.assertRaisesRegex(ValueError, "IGVFFI_MISSING"):
             MODULE.select_requested_configurations(
                 [record], [record.accession, "IGVFFI_MISSING"]
             )
+
+    def test_frozen_portal_manifest_reconciles_and_rejects_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "portal.json"
+            value = self.portal_manifest()
+            path.write_text(json.dumps(value), encoding="utf-8")
+            configurations, sequence_files, loaded = MODULE.load_portal_manifest(path)
+
+            self.assertEqual(configurations, [self.configuration_record()])
+            self.assertEqual(list(sequence_files), ["IGVFFI0001TEST"])
+            self.assertEqual(loaded["portal_manifest_id"], value["portal_manifest_id"])
+
+            value["sequence_files"][0]["href"] = "/tampered.fastq.gz"
+            path.write_text(json.dumps(value), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "ID does not reconcile"):
+                MODULE.load_portal_manifest(path)
+
+    def test_frozen_sampling_policy_requires_prefix_and_valid_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "sampling.json"
+            policy = self.sampling_policy()
+            path.write_text(json.dumps(policy), encoding="utf-8")
+            self.assertEqual(
+                MODULE.load_frozen_sampling_policy(path)["default"][
+                    "records_per_fastq"
+                ],
+                10000,
+            )
+
+            reservoir = self.sampling_policy("reservoir")
+            path.write_text(json.dumps(reservoir), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "only prefix sampling"):
+                MODULE.load_frozen_sampling_policy(path)
+
+            policy["frozen"] = False
+            policy["policy_id"] = MODULE.sha256_json(
+                MODULE.sampling_policy_stable(policy)
+            )[:16]
+            path.write_text(json.dumps(policy), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "not frozen"):
+                MODULE.load_frozen_sampling_policy(path)
+
+    def test_load_audit_inputs_applies_frozen_query_and_sampling_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            portal_path = root / "portal.json"
+            policy_path = root / "sampling.json"
+            portal_path.write_text(json.dumps(self.portal_manifest()), encoding="utf-8")
+            policy_path.write_text(json.dumps(self.sampling_policy()), encoding="utf-8")
+            args = argparse.Namespace(
+                portal_manifest=portal_path,
+                sampling_policy=policy_path,
+                api_root="https://wrong.example/",
+                portal_root="https://wrong.example/",
+                status="in progress",
+                upload_status="uploading",
+                n_reads=7,
+            )
+
+            configurations, sequence_files, portal, policy = MODULE.load_audit_inputs(
+                args
+            )
+
+        self.assertEqual(
+            [record.accession for record in configurations], ["IGVFFI1234TEST"]
+        )
+        self.assertEqual(list(sequence_files), ["IGVFFI0001TEST"])
+        self.assertEqual(
+            portal["portal_manifest_id"], self.portal_manifest()["portal_manifest_id"]
+        )
+        self.assertEqual(policy["policy_id"], self.sampling_policy()["policy_id"])
+        self.assertEqual(args.api_root, "https://api.example.org/")
+        self.assertEqual(args.portal_root, "https://example.org/")
+        self.assertEqual(args.n_reads, 10000)
 
     def test_classify_seqspec_failure_reason_marks_malformed_yaml(self) -> None:
         self.assertEqual(
@@ -88,7 +228,8 @@ class IgvfAuditTests(unittest.TestCase):
         )
         self.assertEqual(
             MODULE.classify_seqspec_failure_reason(
-                "seqspec_version_error", "Input source does not exist: https://example.org/spec.yaml"
+                "seqspec_version_error",
+                "Input source does not exist: https://example.org/spec.yaml",
             ),
             "seqspec_version_error",
         )
@@ -201,7 +342,11 @@ class IgvfAuditTests(unittest.TestCase):
                         }
                     ],
                     "assessment": [
-                        {"type": "pass", "code": "all_expected_files_matched", "description": "ok"}
+                        {
+                            "type": "pass",
+                            "code": "all_expected_files_matched",
+                            "description": "ok",
+                        }
                     ],
                 },
                 {
@@ -210,8 +355,16 @@ class IgvfAuditTests(unittest.TestCase):
                     "reads": ["Read1"],
                     "regions": [],
                     "assessment": [
-                        {"type": "warning", "code": "length_out_of_range", "description": "warn"},
-                        {"type": "interpretation", "code": "note", "description": "info"},
+                        {
+                            "type": "warning",
+                            "code": "length_out_of_range",
+                            "description": "warn",
+                        },
+                        {
+                            "type": "interpretation",
+                            "code": "note",
+                            "description": "info",
+                        },
                     ],
                 },
                 {
@@ -478,12 +631,8 @@ class IgvfAuditTests(unittest.TestCase):
         controlled = MODULE.SequenceFileRecord("C", "/c", True, ["R2"])
 
         self.assertEqual(MODULE.access_class_for_records([public]), "public")
-        self.assertEqual(
-            MODULE.access_class_for_records([controlled]), "controlled"
-        )
-        self.assertEqual(
-            MODULE.access_class_for_records([public, controlled]), "mixed"
-        )
+        self.assertEqual(MODULE.access_class_for_records([controlled]), "controlled")
+        self.assertEqual(MODULE.access_class_for_records([public, controlled]), "mixed")
         self.assertEqual(
             MODULE.classify_failure_category(
                 "seqcheck", "seqcheck_error", "HTTP 503 from remote"
@@ -508,21 +657,15 @@ class IgvfAuditTests(unittest.TestCase):
             "results": [
                 {
                     "files": ["R1"],
-                    "observed": [
-                        {"name": "sampled_count", "data": {"value": 10}}
-                    ],
+                    "observed": [{"name": "sampled_count", "data": {"value": 10}}],
                 },
                 {
                     "files": ["R1"],
-                    "observed": [
-                        {"name": "sampled_count", "data": {"value": 10}}
-                    ],
+                    "observed": [{"name": "sampled_count", "data": {"value": 10}}],
                 },
                 {
                     "files": ["R2"],
-                    "observed": [
-                        {"name": "sampled_count", "data": {"value": 8}}
-                    ],
+                    "observed": [{"name": "sampled_count", "data": {"value": 8}}],
                 },
             ]
         }
@@ -579,8 +722,11 @@ class IgvfAuditTests(unittest.TestCase):
             },
         }
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch.object(
-            MODULE, "build_external_tool_identity", return_value=external_tool
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(
+                MODULE, "build_external_tool_identity", return_value=external_tool
+            ),
         ):
             first = MODULE.write_study_manifest(
                 Path(tmpdir) / "first",
@@ -619,6 +765,82 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertEqual(manifest["auth"]["requested_profile"], "igvf")
         self.assertFalse(manifest["auth"]["seqcheck_profile_ready"])
 
+    def test_study_manifest_hashes_frozen_inputs_without_hashing_paths(self) -> None:
+        portal = self.portal_manifest()
+        policy = self.sampling_policy()
+        record = self.configuration_record()
+        sequence = MODULE.SequenceFileRecord(
+            accession="IGVFFI0001TEST",
+            href="/sequence-files/IGVFFI0001TEST/@@download/test.fastq.gz",
+            controlled_access=False,
+            read_names=["Read1"],
+        )
+        args = argparse.Namespace(
+            api_root="https://api.example.org/",
+            portal_root="https://example.org/",
+            status="released",
+            upload_status="validated",
+            public_only=True,
+            n_reads=10000,
+            fastqc_command="fastqc",
+            fastqc_limits=None,
+            workers=2,
+            force=False,
+            auth_profile="igvf",
+        )
+        external_tool = {
+            "command": "fastqc",
+            "version": "FastQC v0.12.1",
+            "executable_sha256": "fastqc-hash",
+            "configuration": {"mode": "packaged_defaults", "path": "", "sha256": ""},
+        }
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.object(
+                MODULE, "build_external_tool_identity", return_value=external_tool
+            ),
+        ):
+            root = Path(tmpdir)
+            contexts = []
+            for label in ("first", "second"):
+                portal_path = root / label / "portal.json"
+                policy_path = root / label / "policy.json"
+                portal_path.parent.mkdir(parents=True)
+                portal["retrieved_at"] = label
+                policy["created_at"] = label
+                portal_path.write_text(json.dumps(portal), encoding="utf-8")
+                policy_path.write_text(json.dumps(policy), encoding="utf-8")
+                args.portal_manifest = portal_path
+                args.sampling_policy = policy_path
+                contexts.append(
+                    MODULE.write_study_manifest(
+                        root / label / "audit",
+                        args,
+                        [record],
+                        {sequence.accession: sequence},
+                        self.tool_identity("seqcheck 0.2.0"),
+                        self.tool_identity("seqspec 0.5.0"),
+                        None,
+                        None,
+                        label,
+                        portal_manifest=portal,
+                        sampling_policy=policy,
+                    )
+                )
+
+            manifest = json.loads(
+                (root / "second" / "audit" / "manifests" / "study.json").read_text()
+            )
+
+        self.assertEqual(contexts[0].run_id, contexts[1].run_id)
+        self.assertEqual(contexts[0].sampling_method, "prefix")
+        self.assertEqual(
+            manifest["inputs"]["portal_manifest"]["portal_manifest_id"],
+            portal["portal_manifest_id"],
+        )
+        self.assertNotIn("path", manifest["frozen_inputs"]["portal_manifest"])
+
     def test_reconciliation_checks_each_report_and_rejects_orphans(self) -> None:
         record = self.configuration_record()
         context = self.audit_context()
@@ -642,9 +864,7 @@ class IgvfAuditTests(unittest.TestCase):
                                 "description": "Expected regions.",
                                 "data": {
                                     "kind": "records",
-                                    "value": [
-                                        {"region_type": ["RGN:partition:cell"]}
-                                    ],
+                                    "value": [{"region_type": ["RGN:partition:cell"]}],
                                 },
                             }
                         ],
@@ -740,9 +960,7 @@ class IgvfAuditTests(unittest.TestCase):
                 metrics,
                 [],
             )
-            self.assertFalse(
-                missing_version["checks"]["completed_versions_recorded"]
-            )
+            self.assertFalse(missing_version["checks"]["completed_versions_recorded"])
 
             unclassified = MODULE.reconcile_outputs(
                 output_root,
@@ -764,9 +982,7 @@ class IgvfAuditTests(unittest.TestCase):
                     )
                 ],
             )
-            self.assertFalse(
-                unclassified["checks"]["unclassified_failures_absent"]
-            )
+            self.assertFalse(unclassified["checks"]["unclassified_failures_absent"])
 
             orphan = output_root / "reports" / "orphan.json"
             orphan.write_text("{}", encoding="utf-8")
@@ -791,6 +1007,8 @@ class IgvfAuditTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("--fastqc-command", completed.stdout)
         self.assertIn("--fastqc-limits", completed.stdout)
+        self.assertIn("--portal-manifest", completed.stdout)
+        self.assertIn("--sampling-policy", completed.stdout)
 
     def test_write_lab_summary_aggregates_runs_and_failures(self) -> None:
         runs = [

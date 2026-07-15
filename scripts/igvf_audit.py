@@ -30,6 +30,8 @@ USER_AGENT = "seqcheck-igvf-audit/0.1"
 DEFAULT_API_ROOT = "https://api.data.igvf.org/"
 DEFAULT_PORTAL_ROOT = DEFAULT_API_ROOT
 AUDIT_SCHEMA_VERSION = "0.3.0"
+PORTAL_MANIFEST_SCHEMA_VERSION = "0.1.0"
+SAMPLING_POLICY_SCHEMA_VERSION = "0.1.0"
 CURRENT_SEQSPEC_VERSION = "0.5.0"
 SAMPLING_METHOD = "prefix"
 ONTOLOGY_TERM_PATTERN = re.compile(r"RGN:[A-Za-z0-9_]+:[A-Za-z0-9_]+")
@@ -247,6 +249,16 @@ def parse_args() -> argparse.Namespace:
         help="Specific configuration-file accession to audit. Repeatable.",
     )
     parser.add_argument(
+        "--portal-manifest",
+        type=Path,
+        help="Frozen content-addressed portal manifest to consume instead of live search.",
+    )
+    parser.add_argument(
+        "--sampling-policy",
+        type=Path,
+        help="Frozen Experiment 1 sampling policy; currently must select prefix sampling.",
+    )
+    parser.add_argument(
         "--public-only",
         action="store_true",
         help="Skip controlled-access FASTQs.",
@@ -315,16 +327,13 @@ def main() -> int:
         config_subdir="seqcheck",
     )
 
-    configurations = fetch_configuration_records(
-        args.api_root,
-        status=args.status,
-        upload_status=args.upload_status,
-    )
-    sequence_files = fetch_sequence_file_records(
-        args.api_root,
-        status=args.status,
-        upload_status=args.upload_status,
-    )
+    try:
+        configurations, sequence_files, portal_manifest, sampling_policy = (
+            load_audit_inputs(args)
+        )
+    except (OSError, ValueError) as err:
+        print(f"igvf_audit: {err}", file=sys.stderr)
+        return 2
 
     if args.configuration_accession:
         try:
@@ -352,6 +361,8 @@ def main() -> int:
         seqcheck_auth_profile,
         seqspec_auth_profile,
         started_at,
+        portal_manifest=portal_manifest,
+        sampling_policy=sampling_policy,
     )
 
     print(
@@ -480,6 +491,43 @@ def main() -> int:
     )
     write_json(output_root / "validation" / "reconciliation.json", reconciliation)
     return 0 if reconciliation["valid"] else 1
+
+
+def load_audit_inputs(
+    args: argparse.Namespace,
+) -> tuple[
+    list[ConfigurationRecord],
+    dict[str, SequenceFileRecord],
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+]:
+    portal_manifest = None
+    if args.portal_manifest:
+        configurations, sequence_files, portal_manifest = load_portal_manifest(
+            args.portal_manifest.resolve()
+        )
+        query = portal_manifest["query"]
+        args.api_root = query["api_root"]
+        args.portal_root = query["portal_root"]
+        args.status = query["status"]
+        args.upload_status = query["upload_status"]
+    else:
+        configurations = fetch_configuration_records(
+            args.api_root,
+            status=args.status,
+            upload_status=args.upload_status,
+        )
+        sequence_files = fetch_sequence_file_records(
+            args.api_root,
+            status=args.status,
+            upload_status=args.upload_status,
+        )
+
+    sampling_policy = None
+    if args.sampling_policy:
+        sampling_policy = load_frozen_sampling_policy(args.sampling_policy.resolve())
+        args.n_reads = sampling_policy["default"]["records_per_fastq"]
+    return configurations, sequence_files, portal_manifest, sampling_policy
 
 
 def process_configuration(
@@ -908,6 +956,194 @@ def sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def file_identity(path: Path) -> dict[str, Any]:
+    return {
+        "path": str(path.resolve()),
+        "sha256": file_sha256(path),
+        "size_bytes": path.stat().st_size,
+    }
+
+
+def functional_script_provenance(value: dict[str, Any]) -> dict[str, Any]:
+    required = {"version", "sha256", "python"}
+    if not isinstance(value, dict) or not required.issubset(value):
+        raise ValueError("portal manifest tool identity is incomplete")
+    return {key: value[key] for key in sorted(required)}
+
+
+def portal_manifest_stable(value: dict[str, Any]) -> dict[str, Any]:
+    tools = value.get("tools", {})
+    if not isinstance(tools, dict) or set(tools) != {"audit_runtime", "freezer"}:
+        raise ValueError("portal manifest must identify its freezer and audit runtime")
+    return {
+        "schema_version": value.get("schema_version"),
+        "query": value.get("query"),
+        "configurations": value.get("configurations"),
+        "sequence_files": value.get("sequence_files"),
+        "missing_linked_sequence_file_accessions": value.get(
+            "missing_linked_sequence_file_accessions"
+        ),
+        "tools": {
+            name: functional_script_provenance(identity)
+            for name, identity in sorted(tools.items())
+        },
+    }
+
+
+def sampling_policy_stable(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: item
+        for key, item in value.items()
+        if key not in {"policy_id", "created_at"}
+    }
+
+
+def load_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as err:
+        raise ValueError(f"{label} is not valid JSON: {path}") from err
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be a JSON object: {path}")
+    return value
+
+
+def load_portal_manifest(
+    path: Path,
+) -> tuple[list[ConfigurationRecord], dict[str, SequenceFileRecord], dict[str, Any]]:
+    value = load_json_object(path, "portal manifest")
+    if value.get("schema_version") != PORTAL_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(
+            "unsupported portal manifest schema: "
+            f"{value.get('schema_version', '')}"
+        )
+    expected_id = sha256_json(portal_manifest_stable(value))[:16]
+    if value.get("portal_manifest_id") != expected_id:
+        raise ValueError("portal manifest ID does not reconcile with its contents")
+
+    query = value.get("query")
+    query_fields = {"api_root", "portal_root", "status", "upload_status"}
+    if not isinstance(query, dict) or set(query) != query_fields:
+        raise ValueError("portal manifest query fields are incomplete or unexpected")
+    if any(not isinstance(query[field], str) or not query[field] for field in query_fields):
+        raise ValueError("portal manifest query values must be non-empty strings")
+
+    configurations = decode_configuration_records(value.get("configurations"))
+    sequence_files = decode_sequence_file_records(value.get("sequence_files"))
+    linked_accessions = {
+        accession
+        for record in configurations
+        for accession in extract_accessions(record.seqspec_of)
+    }
+    unexpected_sequence_files = sorted(set(sequence_files) - linked_accessions)
+    if unexpected_sequence_files:
+        raise ValueError(
+            "portal manifest contains unlinked sequence files: "
+            + ", ".join(unexpected_sequence_files)
+        )
+    expected_missing = sorted(linked_accessions - set(sequence_files))
+    missing = value.get("missing_linked_sequence_file_accessions")
+    if missing != expected_missing:
+        raise ValueError("portal manifest missing-sequence-file inventory does not reconcile")
+
+    counts = value.get("counts")
+    expected_counts = {
+        "configurations": len(configurations),
+        "linked_sequence_files": len(sequence_files),
+        "missing_linked_sequence_files": len(expected_missing),
+    }
+    if counts != expected_counts:
+        raise ValueError("portal manifest counts do not reconcile")
+    return configurations, sequence_files, value
+
+
+def decode_configuration_records(value: Any) -> list[ConfigurationRecord]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("portal manifest must contain at least one configuration")
+    expected_fields = set(ConfigurationRecord.__dataclass_fields__)
+    records = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != expected_fields:
+            raise ValueError(f"portal configuration {index} has invalid fields")
+        list_fields = {"preferred_assay_titles", "aliases", "seqspec_of"}
+        if any(
+            not isinstance(item[field], list)
+            or any(not isinstance(entry, str) for entry in item[field])
+            for field in list_fields
+        ):
+            raise ValueError(f"portal configuration {index} has invalid list fields")
+        if any(
+            not isinstance(item[field], str)
+            for field in expected_fields - list_fields
+        ):
+            raise ValueError(f"portal configuration {index} has invalid string fields")
+        records.append(ConfigurationRecord(**item))
+    accessions = [record.accession for record in records]
+    if any(not accession for accession in accessions) or len(accessions) != len(
+        set(accessions)
+    ):
+        raise ValueError("portal configuration accessions must be non-empty and unique")
+    if accessions != sorted(accessions):
+        raise ValueError("portal configurations must be sorted by accession")
+    return records
+
+
+def decode_sequence_file_records(value: Any) -> dict[str, SequenceFileRecord]:
+    if not isinstance(value, list):
+        raise ValueError("portal manifest sequence_files must be a list")
+    expected_fields = set(SequenceFileRecord.__dataclass_fields__)
+    records = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != expected_fields:
+            raise ValueError(f"portal sequence file {index} has invalid fields")
+        if (
+            not isinstance(item["accession"], str)
+            or not isinstance(item["href"], str)
+            or not isinstance(item["controlled_access"], bool)
+            or not isinstance(item["read_names"], list)
+            or any(not isinstance(entry, str) for entry in item["read_names"])
+        ):
+            raise ValueError(f"portal sequence file {index} has invalid values")
+        records.append(SequenceFileRecord(**item))
+    accessions = [record.accession for record in records]
+    if any(not accession for accession in accessions) or len(accessions) != len(
+        set(accessions)
+    ):
+        raise ValueError("portal sequence-file accessions must be non-empty and unique")
+    if accessions != sorted(accessions):
+        raise ValueError("portal sequence files must be sorted by accession")
+    return {record.accession: record for record in records}
+
+
+def load_frozen_sampling_policy(path: Path) -> dict[str, Any]:
+    value = load_json_object(path, "sampling policy")
+    if value.get("schema_version") != SAMPLING_POLICY_SCHEMA_VERSION:
+        raise ValueError(
+            "unsupported sampling policy schema: "
+            f"{value.get('schema_version', '')}"
+        )
+    stable = sampling_policy_stable(value)
+    if value.get("policy_id") != sha256_json(stable)[:16]:
+        raise ValueError("sampling policy ID does not reconcile with its contents")
+    if value.get("frozen") is not True:
+        raise ValueError("sampling policy is not frozen")
+    default = value.get("default")
+    if not isinstance(default, dict):
+        raise ValueError("sampling policy has no default rule")
+    n_reads = default.get("records_per_fastq")
+    if not isinstance(n_reads, int) or isinstance(n_reads, bool) or n_reads <= 0:
+        raise ValueError("sampling policy records_per_fastq must be a positive integer")
+    method = default.get("sampling_method")
+    if method != SAMPLING_METHOD:
+        raise ValueError(
+            "IGVF remote audit currently supports only prefix sampling; "
+            f"the frozen policy selected {method!r}"
+        )
+    if default.get("sampling_seed") is not None:
+        raise ValueError("prefix sampling policy must use a null sampling seed")
+    return value
+
+
 def command_output(command: list[str], env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         command,
@@ -968,6 +1204,9 @@ def write_study_manifest(
     seqcheck_auth_profile: str | None,
     seqspec_auth_profile: str | None,
     started_at: str,
+    *,
+    portal_manifest: dict[str, Any] | None = None,
+    sampling_policy: dict[str, Any] | None = None,
 ) -> AuditContext:
     linked_accessions = {
         accession
@@ -979,9 +1218,25 @@ def write_study_manifest(
         for accession in sorted(linked_accessions)
         if accession in sequence_files
     ]
+    sampling_method = (
+        sampling_policy["default"]["sampling_method"]
+        if sampling_policy is not None
+        else SAMPLING_METHOD
+    )
+    sampling_seed = (
+        sampling_policy["default"]["sampling_seed"]
+        if sampling_policy is not None
+        else None
+    )
+    frozen_inputs, input_provenance = build_frozen_input_identities(
+        args,
+        portal_manifest,
+        sampling_policy,
+    )
     stable_manifest = {
         "audit_schema_version": AUDIT_SCHEMA_VERSION,
-        "sampling_method": SAMPLING_METHOD,
+        "sampling_method": sampling_method,
+        "sampling_seed": sampling_seed,
         "query": {
             "api_root": args.api_root,
             "portal_root": args.portal_root,
@@ -997,6 +1252,7 @@ def write_study_manifest(
             "seqcheck_profile_ready": seqcheck_auth_profile is not None,
             "seqspec_profile_ready": seqspec_auth_profile is not None,
         },
+        "frozen_inputs": frozen_inputs,
         "tools": {
             "seqcheck": asdict(seqcheck_identity),
             "seqspec": asdict(seqspec_identity),
@@ -1019,8 +1275,8 @@ def write_study_manifest(
     run_id = sha256_json(run_identity)[:16]
     context = AuditContext(
         run_id=run_id,
-        sampling_method=SAMPLING_METHOD,
-        sampling_seed=None,
+        sampling_method=sampling_method,
+        sampling_seed=sampling_seed,
         seqcheck=seqcheck_identity,
         seqspec=seqspec_identity,
     )
@@ -1037,9 +1293,55 @@ def write_study_manifest(
         },
         "selected_configuration_count": len(configurations),
         "linked_sequence_file_count": len(linked_sequence_files),
+        "inputs": input_provenance,
     }
     write_json(output_root / "manifests" / "study.json", manifest)
     return context
+
+
+def build_frozen_input_identities(
+    args: argparse.Namespace,
+    portal_manifest: dict[str, Any] | None,
+    sampling_policy: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    stable: dict[str, Any] = {}
+    provenance: dict[str, Any] = {}
+    portal_path = getattr(args, "portal_manifest", None)
+    if portal_manifest is not None:
+        if portal_path is None:
+            raise ValueError("portal manifest path is required for provenance")
+        portal_path = Path(portal_path).resolve()
+        portal_stable_sha256 = sha256_json(portal_manifest_stable(portal_manifest))
+        stable["portal_manifest"] = {
+            "portal_manifest_id": portal_manifest["portal_manifest_id"],
+            "stable_sha256": portal_stable_sha256,
+        }
+        provenance["portal_manifest"] = {
+            **file_identity(portal_path),
+            **stable["portal_manifest"],
+        }
+    else:
+        stable["portal_manifest"] = {"mode": "live"}
+        provenance["portal_manifest"] = {"mode": "live"}
+
+    policy_path = getattr(args, "sampling_policy", None)
+    if sampling_policy is not None:
+        if policy_path is None:
+            raise ValueError("sampling policy path is required for provenance")
+        policy_path = Path(policy_path).resolve()
+        policy_stable_sha256 = sha256_json(sampling_policy_stable(sampling_policy))
+        stable["sampling_policy"] = {
+            "policy_id": sampling_policy["policy_id"],
+            "stable_sha256": policy_stable_sha256,
+        }
+        provenance["sampling_policy"] = {
+            **file_identity(policy_path),
+            **stable["sampling_policy"],
+        }
+    else:
+        stable["sampling_policy"] = {"mode": "command_line"}
+        provenance["sampling_policy"] = {"mode": "command_line"}
+    return stable, provenance
 
 
 def build_external_tool_identity(
@@ -1200,16 +1502,23 @@ def fetch_sequence_file_records(
     )
     records = {}
     for item in payload.get("@graph", []):
-        accession = str(item.get("accession", "")).strip()
-        if not accession:
+        record = normalize_sequence_file_record(item)
+        if record is None:
             continue
-        records[accession] = SequenceFileRecord(
-            accession=accession,
-            href=str(item.get("href", "")).strip(),
-            controlled_access=bool(item.get("controlled_access", False)),
-            read_names=[str(value) for value in item.get("read_names", [])],
-        )
+        records[record.accession] = record
     return records
+
+
+def normalize_sequence_file_record(item: dict[str, Any]) -> SequenceFileRecord | None:
+    accession = str(item.get("accession", "")).strip()
+    if not accession:
+        return None
+    return SequenceFileRecord(
+        accession=accession,
+        href=str(item.get("href", "")).strip(),
+        controlled_access=bool(item.get("controlled_access", False)),
+        read_names=[str(value) for value in item.get("read_names", [])],
+    )
 
 
 def normalize_configuration_record(item: dict[str, Any]) -> ConfigurationRecord:
