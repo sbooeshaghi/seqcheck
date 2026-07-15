@@ -876,6 +876,30 @@ artifact bundle with checksums rather than committed to Git.
 | 8. Adjudication | Blind-review at least 50 candidates and 20 pass controls and run selected corrections | High-confidence candidates confirm more often than controls and at least two corrections change the target endpoint | All reviews are resolved or marked inconclusive; immutable paired case-study outputs exist |
 | 9. Analysis freeze | Regenerate all tables and figures from a clean study manifest | A second clean generation reproduces every canonical result | Canonical table and figure-data hashes match; software and artifact manifests are archived |
 
+The analysis freeze uses `scripts/run_analysis_freeze.py` and an exact study
+manifest based on `experiments/paper/protocol/analysis_freeze.template.json`.
+The manifest registers every immutable input file or directory, clean software
+repository, software file and version, ordered analysis command, and expected
+table, figure-data file, or figure. Commands run with an explicit environment
+that sets `LC_ALL=C`, `TZ=UTC`, and `PYTHONHASHSEED=0`; no undeclared ambient
+environment variables are inherited. Each command receives a new `{step_root}`
+inside one of two isolated reproduction roots. Every existing path in a command
+must be a registered input, software file, prior-step output, or tracked file in
+a registered clean repository. Files written under `tables/`, `analysis/`,
+`figure_data/`, or `figures/` must all be declared; undeclared result files,
+missing outputs, command failures, and symbolic links fail the freeze.
+
+The freezer hashes every source tree and software file before execution, runs
+the complete analysis twice, and rehashes the sources and software afterward.
+Canonical tables and figure data must be byte-identical between reproductions.
+Rendered figures are inventoried but may differ at the byte level because PDF
+and image encoders can embed metadata. A valid run copies the first verified
+result set into `bundle/results/` and archives the study manifest, complete
+artifact inventory, repository commits, software identities, result identities,
+run logs, and comparison table. It writes a fail-closed validation record next
+to the bundle. The paper result manifest is frozen only when every reconciliation
+check passes.
+
 Any tool bug discovered during locked evaluation must be fixed and documented.
 The affected experiment is then rerun in full under a new run identifier. Results
 from before and after the fix must not be combined.

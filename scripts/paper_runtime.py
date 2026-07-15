@@ -22,6 +22,8 @@ def run_measured_command(
     stdout_path: Path,
     stderr_path: Path,
     timeout_seconds: int,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not argv:
         raise ValueError("measured command cannot be empty")
@@ -32,7 +34,7 @@ def run_measured_command(
     started = time.perf_counter()
     timed_out = False
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-        process = subprocess.Popen(argv, stdout=stdout, stderr=stderr)
+        process = subprocess.Popen(argv, stdout=stdout, stderr=stderr, cwd=cwd, env=env)
         while True:
             waited_pid, status, usage = os.wait4(process.pid, os.WNOHANG)
             if waited_pid == process.pid:

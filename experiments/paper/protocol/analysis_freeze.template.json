@@ -1,0 +1,86 @@
+{
+  "schema_version": "0.1.0",
+  "study_id": "replace-with-paper-study-id",
+  "repetitions": 2,
+  "canonical_output_kinds": [
+    "table",
+    "figure_data"
+  ],
+  "result_directory_names": [
+    "tables",
+    "analysis",
+    "figure_data",
+    "figures"
+  ],
+  "environment": {
+    "LC_ALL": "C",
+    "PYTHONHASHSEED": "0",
+    "TZ": "UTC"
+  },
+  "inputs": [
+    {
+      "id": "frozen-study-artifacts",
+      "path": "/absolute/path/to/frozen/input/manifests-and-reports"
+    }
+  ],
+  "repositories": [
+    {
+      "id": "seqcheck",
+      "path": "/absolute/path/to/clean/seqcheck-repository"
+    }
+  ],
+  "software": [
+    {
+      "id": "python",
+      "path": "/absolute/path/to/python",
+      "version": "3.x.y",
+      "repository_id": null
+    },
+    {
+      "id": "paper-analysis-driver",
+      "path": "/absolute/path/to/seqcheck/scripts/paper_analysis.py",
+      "version": "0.1.0",
+      "repository_id": "seqcheck"
+    }
+  ],
+  "steps": [
+    {
+      "id": "paper-analysis",
+      "working_directory": "/absolute/path/to/seqcheck",
+      "timeout_seconds": 3600,
+      "depends_on": [],
+      "input_ids": [
+        "frozen-study-artifacts"
+      ],
+      "software_ids": [
+        "python",
+        "paper-analysis-driver"
+      ],
+      "command": [
+        "/absolute/path/to/python",
+        "/absolute/path/to/seqcheck/scripts/paper_analysis.py",
+        "--frozen-input-root",
+        "/absolute/path/to/frozen/input/manifests-and-reports",
+        "--output-root",
+        "{step_root}"
+      ],
+      "outputs": [
+        {
+          "id": "paper-summary-table",
+          "path": "tables/paper_summary.csv",
+          "kind": "table"
+        },
+        {
+          "id": "paper-summary-figure-data",
+          "path": "figure_data/paper_summary.json",
+          "kind": "figure_data"
+        },
+        {
+          "id": "paper-summary-figure",
+          "path": "figures/paper_summary.pdf",
+          "kind": "figure"
+        }
+      ]
+    }
+  ]
+}

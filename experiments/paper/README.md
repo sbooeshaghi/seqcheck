@@ -415,3 +415,26 @@ output, and compares the paired endpoint only with its predeclared direction and
 minimum change. `validation/downstream_execution.json` reports mechanical
 validity separately from the requirement that at least two cases change in the
 expected direction.
+
+After every experiment and human review is frozen, create the final analysis
+study manifest from `protocol/analysis_freeze.template.json`. Register the
+immutable report/manifests used as analysis inputs, every repository and
+software file, ordered analysis commands, and every table, figure-data file,
+and figure. Then execute the final two-run reproducibility gate:
+
+```bash
+python3 scripts/run_analysis_freeze.py \
+  --study-manifest experiments/paper/runs/<run-id>/analysis-freeze-study.json \
+  --output-root experiments/paper/runs/<run-id>/analysis-freeze
+```
+
+The runner uses separate `reproduction_1/` and `reproduction_2/` roots. It
+uses only the environment declared in the study manifest and requires
+`LC_ALL=C`, `TZ=UTC`, and `PYTHONHASHSEED=0`. It rejects undeclared command input
+paths, undeclared result files, missing outputs, symbolic links, changed source
+artifacts or software, dirty registered repositories, and nonidentical
+canonical tables or figure data. Register package lock files or environment
+manifests needed to reconstruct runtime dependencies. Rendered figures are
+inventoried but are not required to be byte-identical. A successful run writes
+the portable result archive under `bundle/` and reports `valid: true` and
+`frozen: true` in `validation/analysis_freeze.json`.

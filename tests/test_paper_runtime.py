@@ -98,6 +98,32 @@ class PaperRuntimeTests(unittest.TestCase):
         self.assertEqual(failed["exit_code"], 7)
         self.assertTrue(timed_out["timed_out"])
 
+    def test_measured_command_uses_declared_working_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workdir = root / "workdir"
+            workdir.mkdir()
+            measurement = MODULE.run_measured_command(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os; from pathlib import Path; "
+                        "print(Path.cwd()); print(os.environ['FROZEN_VALUE'])"
+                    ),
+                ],
+                stdout_path=root / "cwd.out",
+                stderr_path=root / "cwd.err",
+                timeout_seconds=5,
+                cwd=workdir,
+                env={"FROZEN_VALUE": "expected"},
+            )
+            MODULE.require_success(measurement)
+            observed = Path(measurement["stdout"]["path"]).read_text().splitlines()
+
+        self.assertEqual(Path(observed[0]).resolve(), workdir.resolve())
+        self.assertEqual(observed[1], "expected")
+
     def test_report_metrics_flatten_and_reconcile(self) -> None:
         payload = {
             "report_schema_version": "0.1.0",
