@@ -139,6 +139,12 @@ two-reviewer sheet and marks the cohort as unfrozen. A rerun never overwrites an
 existing review sheet and reports when that sheet belongs to a different
 selection identifier.
 
+Reviewers follow `docs/COHORT_REVIEW_PROTOCOL.md`. After both independent
+reviews and any adjudication are locked, `scripts/freeze_cohort.py` reconciles
+the review table to the candidate manifest and assigns the seeded 12/18 split.
+The command writes no frozen cohort when any review, baseline check, family
+quota, or deduplication rule fails.
+
 Two configurations from each family will form a 12-configuration calibration
 set. The remaining 18 configurations will be locked before thresholds are chosen
 and used only for evaluation. Existing repository fixtures will be used for
